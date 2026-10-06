@@ -1,0 +1,40 @@
+# PS2 DAW - PS2Build project definition.
+#
+# Build:   ps2build build
+# Output:  build/bin/ps2daw.elf
+#
+# Every IOP driver is embedded in the ELF (embed_irx) and loaded from memory
+# after an IOP reset, so the ELF runs the same from any launcher or device.
+# Each entry becomes <name>_irx / size_<name>_irx (and <name>_irx.h).
+
+project: ps2daw
+
+targets:
+  - name: ps2daw
+    type: ee
+    sources:
+      - src/*.cpp
+      - src/core/*.cpp
+      - src/audio/*.cpp
+      - src/project/*.cpp
+      - src/platform/*.cpp
+      - src/ui/*.cpp
+    include_dirs: [src]
+    # Desktop C++ features we deliberately do not use on the EE.
+    cflags: [-fno-exceptions, -fno-rtti, -Wextra, -Wno-unused-parameter]
+    # Link order matters for static archives: users before what they use.
+    libs: [gskit, dmakit, audio, pad, filexio, patches, debug]
+    embed_irx:
+      # Controller: SIO2 bus + pad driver matching the linked libpad.
+      - sio2man
+      - padman
+      # Audio: libsd must be loaded before audio.irx.
+      - libsd
+      - "audio:audio"
+      # USB mass storage: iomanX + fileXio, USB host, block devices, FAT.
+      - iomanx
+      - filexio
+      - usbd
+      - bdm
+      - bdmfs_fatfs
+      - usbmass_bd

@@ -1,0 +1,16 @@
+# PS2Build outputs
+build/
+compile_commands.json
+.ninja_*
+*.o
+*.a
+*.elf
+
+# Host test outputs
+tests/host/out/
+
+# Editor / OS noise
+.vscode/
+.idea/
+*.swp
+.DS_Store
