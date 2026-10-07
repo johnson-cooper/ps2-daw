@@ -17,7 +17,7 @@ public:
     // yield and return true, or return false if nobody is draining the queue
     // (audio not running), in which case the command is dropped instead of
     // hanging the UI. May be null (never wait).
-    Session(AudioEngine& engine, const SampleBank& bank, bool (*waitFn)());
+    Session(AudioEngine& engine, SampleBank& bank, bool (*waitFn)());
 
     Project& project() { return project_; }
     const Project& project() const { return project_; }
@@ -42,7 +42,18 @@ public:
     void fillChannelEvery(int channel, int interval);
     void clearPattern(int pattern);
     void setPatternLength(int pattern, int steps);
+    // Edits the pattern and, per switchMode(), takes the engine there at once
+    // or at the next beat/bar while playing.
     void selectPattern(int pattern);
+    SwitchMode switchMode() const { return switchMode_; }
+    void setSwitchMode(SwitchMode m) { switchMode_ = m; }
+    // Copies steps+length (not the name) from one pattern to another.
+    bool copyPattern(int src, int dst);
+    // Copies `src` into the first empty pattern and selects it. Returns the
+    // new pattern index, or -1 when every pattern has content.
+    int duplicatePattern(int src);
+    bool patternIsEmpty(int pattern) const;
+    void setPatternName(int pattern, const char* name);
 
     // Channel strip
     void setVolume(int channel, int volume);
@@ -50,6 +61,17 @@ public:
     void setMute(int channel, bool mute);
     void setSolo(int channel, bool solo);
     void setSample(int channel, int slot);
+    // Re-resolves every channel's sampleRef against the bank (after a load
+    // finished). Returns how many external references are still unresolved.
+    int bindSamples();
+    bool slotInUse(int slot) const;
+    // Starts the release handshake for an imported sample nobody uses.
+    // The memory is freed later by SampleBank::reap().
+    bool releaseSample(int slot);
+    // Retries release commands the engine queue could not take earlier.
+    void pumpReleases();
+    // Bumps on every loadProject(); the sample library watches it.
+    uint32_t loadSerial() const { return loadSerial_; }
     void setVoiceMode(int channel, VoiceMode mode);
     void setMasterVolume(int volume);
 
@@ -63,13 +85,16 @@ public:
     uint32_t droppedCommands() const { return dropped_; }
 
 private:
-    void post(CmdType t, int a = 0, int b = 0, int c = 0, int32_t value = 0);
+    bool post(CmdType t, int a = 0, int b = 0, int c = 0, int32_t value = 0);
     void syncAll();
     int resolveSample(const ChannelData& c) const;
 
     AudioEngine& engine_;
-    const SampleBank& bank_;
+    SampleBank& bank_;
     bool (*wait_)();
     Project project_;
     uint32_t dropped_;
+    uint32_t loadSerial_;
+    SwitchMode switchMode_ = SwitchMode::Immediate;
+    uint32_t releasePending_; // bitmask of slots whose Release command is not yet queued
 };

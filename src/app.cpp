@@ -6,6 +6,7 @@
 #include <string.h>
 
 #include "audio/drum_synth.hpp"
+#include "platform/debug_mailbox.hpp"
 #include "platform/ps2_system.hpp"
 #include "ui/debug_overlay.hpp"
 #include "ui/font.hpp"
@@ -16,7 +17,9 @@ App* App::instance_ = nullptr;
 
 App::App()
     : session_(engine_, bank_, &App::waitForAudio),
-      ctx_{session_, engine_, audio_, storage_, log_, bank_, menu_}
+      testSource_(storage_),
+      library_(session_, bank_, testSource_, &audio_, log_),
+      ctx_{session_, engine_, audio_, storage_, log_, bank_, menu_, library_}
 {
     instance_ = this;
     views_[(int)ViewId::ChannelRack] = &rack_;
@@ -200,7 +203,12 @@ void App::drawHeader()
     const int step = ctx_.heardStep();
     char pos[32];
     if (step >= 0)
-        snprintf(pos, sizeof(pos), "P%d %d.%d", es.pattern + 1, step / 4 + 1, step % 4 + 1);
+    {
+        if (es.queuedPattern != 0xff)
+            snprintf(pos, sizeof(pos), "P%d>%d %d.%d", es.pattern + 1, es.queuedPattern + 1, step / 4 + 1, step % 4 + 1);
+        else
+            snprintf(pos, sizeof(pos), "P%d %d.%d", es.pattern + 1, step / 4 + 1, step % 4 + 1);
+    }
     else
         snprintf(pos, sizeof(pos), "P%d -.-", session_.project().currentPattern + 1);
     gfx_.text(390, y + 4, pos, theme::kText);
@@ -235,6 +243,72 @@ void App::drawStatusBar(View& view)
         gfx_.text(theme::kSafeLeft, y + 18, "START play/pause  L3 stop  R3 debug", theme::kTextDim, 1, 2);
 }
 
+void App::serviceDebugMailbox(InputState& in)
+{
+    DebugMailbox& mb = g_debugMailbox;
+    if (mb.inputMask) {
+        const uint32_t m = mb.inputMask;
+        mb.inputMask = 0;
+        in.held |= m;
+        in.pressed |= m;
+        in.repeat |= m;
+    }
+    const uint32_t cmd = mb.command;
+    if (!cmd)
+        return;
+    mb.command = 0;
+    const char* sf = "__SELFTEST/";
+    char ref[64];
+    switch (cmd) {
+    case DbgSampleSelfTest:
+        // Synthetic files through the real asynchronous load path.
+        snprintf(ref, sizeof(ref), "samples:%sSINE.WAV", sf);
+        library_.request(ref, SampleLibrary::Action::Assign, 6);
+        snprintf(ref, sizeof(ref), "samples:%sSTEREO.WAV", sf);
+        library_.request(ref, SampleLibrary::Action::Assign, 7);
+        snprintf(ref, sizeof(ref), "samples:%sGARBAGE.WAV", sf);
+        library_.request(ref, SampleLibrary::Action::Load);
+        snprintf(ref, sizeof(ref), "samples:%sMISSING.WAV", sf);
+        library_.request(ref, SampleLibrary::Action::Load);
+        break;
+    case DbgReleaseUnreferenced:
+        library_.releaseUnreferenced();
+        break;
+    case DbgSwitchView:
+        if (mb.arg < (uint32_t)ViewId::Count) {
+            current_ = (int)mb.arg;
+            views_[current_]->onEnter(ctx_);
+        }
+        break;
+    default:
+        break;
+    }
+}
+
+void App::publishTelemetry()
+{
+    volatile uint32_t* t = g_debugMailbox.telemetry;
+    const Ps2Audio::Stats& as = audio_.stats();
+    t[0] = t[0] + 1;
+    t[1] = library_.loadedOk();
+    t[2] = library_.loadFailed();
+    t[3] = (uint32_t)bank_.liveCount();
+    t[4] = bank_.externalBytesUsed();
+    t[5] = (uint32_t)library_.missingCount();
+    t[6] = as.underruns;
+    t[7] = as.tailRetries;
+    t[8] = as.queuedFrames;
+    t[9] = engine_.status().voicesActive;
+    t[10] = (uint32_t)current_;
+    t[11] = (uint32_t)ctx_.selectedChannel;
+    for (int ch = 0; ch < 8; ++ch)
+        t[12 + ch] = (uint32_t)(int32_t)session_.project().channels[ch].sampleSlot;
+    t[20] = engine_.status().transport;
+    t[21] = as.hwStale;
+    t[22] = as.blocks;
+    t[23] = as.spuBytes;
+}
+
 void App::frame()
 {
     const uint64_t t0 = ps2sys::timeUs();
@@ -242,7 +316,14 @@ void App::frame()
 
     input_.update(ctx_.nowMs, log_);
     storage_.poll(ctx_.nowMs, log_);
-    const InputState in = applyStickNavigation(input_.state());
+    library_.tick(); // one bounded file chunk per frame; never touches the audio thread
+    if (library_.messageSerial() != seenLibraryMsg_) {
+        seenLibraryMsg_ = library_.messageSerial();
+        ctx_.toast("%s", library_.message());
+    }
+    InputState raw = input_.state();
+    serviceDebugMailbox(raw);
+    const InputState in = applyStickNavigation(raw);
 
     View& view = *views_[current_];
     if (!menu_.isOpen())
@@ -260,6 +341,7 @@ void App::frame()
     frameUs_ = (uint32_t)(ps2sys::timeUs() - t0); // CPU time before the vsync wait
     gfx_.endFrame();
 
+    publishTelemetry();
     ++fpsFrames_;
     const uint64_t now = ps2sys::timeUs();
     if (fpsStartUs_ == 0)

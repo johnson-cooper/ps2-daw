@@ -39,8 +39,11 @@ Columns: `[LED] [mute] [name] [volume] [pan] [steps 1..16]`.
 | Right stick ↑↓ / ←→ | selected channel volume / pan |
 
 Channel menu: preview, choose sample, voice (software mixer / SPU2 hardware),
-solo, fill every 4/2/1 steps, clear channel, pattern length (8-64), clear
-pattern, stop.
+solo, fill every 4/2/1 steps, clear channel, pattern length (8-64), pattern
+tools, stop. Pattern tools: duplicate to the next empty pattern, copy to a
+chosen pattern (asks before overwriting), clear (asks), name (cycles presets),
+switch mode while playing (immediate / next beat / next bar). A pending switch
+shows in the header as `P1>2`; the editing view moves to the new pattern at once.
 
 Indicators: LED flashes when the channel is heard (green = software, purple =
 SPU2); mute box green = playing, gold = solo, dark with red border = muted;
@@ -60,13 +63,25 @@ purple bar on the name = SPU2 voice; pale bar under a step = playhead.
 
 ## Browser
 
+Two sources: **LOADED** (everything in memory: built-in kit and imports) and
+**USB** (`PS2DAW/SAMPLES` and sub-folders on the first drive that has it).
+
 | Button | Action |
 | --- | --- |
-| ↑ ↓ | select sample |
-| Cross | assign to target channel |
-| Square | preview through the software mixer |
-| Triangle | preview through an SPU2 hardware voice |
+| ↑ ↓ | select entry |
+| ← → | page up / down |
+| L2 | switch source (LOADED / USB) |
+| Cross | folder: enter. WAV/ADP: load if needed, then assign to the target channel |
+| Circle | parent folder (USB) |
+| Square | preview through the software mixer (loads the file first if needed) |
+| Triangle | preview on an SPU2 hardware voice (uploads mono samples first) |
 | L1 / R1 | change target channel |
+| R2 | action menu: load, assign, preview/upload/remove SPU2, unload, rescan, create folder |
+
+The bottom lines show loader progress or the last result, imported PCM
+(used / 12288 KB), SPU2 KB, slots used and missing samples. Rows show type
+(DIR/WAV/ADP/---), name and size; `RAM` marks files already loaded. Entries
+starting with `.` are hidden; only the first 96 entries of a folder are listed.
 
 ## Project
 
@@ -77,6 +92,12 @@ purple bar on the name = SPU2 voice; pale bar under a step = playhead.
 | L1 / R1 | fine change (tempo ±0.1 BPM, master ±1, latency ±128) |
 | Cross | run the action on the row |
 
-Rows: tempo, pattern, length, master volume, audio latency, file slot, save
-to USB, load from USB, new demo project (press twice), test tone via PCM
+Rows: name (Cross edits: ↑ ↓ change letter, ← → move, Cross done), tempo,
+pattern (with its name), length, master volume, audio latency, file slot
+(shows the slot's project name, `(empty)`, `DAMAGED` or `BAK`), missing
+samples (Cross lists them), save to USB, load from USB (asks again when there
+are unsaved changes), new demo project (press twice), test tone via PCM
 stream, test tone via SPU2 voice, debug overlay, clear error.
+
+Saving writes `SLOTn.TMP`, verifies it, rotates the old file to `SLOTn.BAK`,
+then renames. A damaged `SLOTn.ps2daw` loads from the `.BAK` and says so.

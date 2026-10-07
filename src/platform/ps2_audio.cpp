@@ -88,50 +88,120 @@ bool Ps2Audio::init(StatusLog& log)
     return true;
 }
 
+bool Ps2Audio::resident(int slot) const
+{
+    return slot >= 0 && slot < cfg::kMaxSamples && spuHandle_[slot] != AUDIO_SOUND_INVALID;
+}
+
+bool Ps2Audio::uploadPcm(int slot, const Sample& s, char* err, size_t cap)
+{
+    auto fail = [&](const char* msg) {
+        if (err && cap)
+            snprintf(err, cap, "%s", msg);
+        return false;
+    };
+    if (!stats_.initialized)
+        return fail("audio not initialised");
+    if (slot < 0 || slot >= cfg::kMaxSamples)
+        return fail("bad slot");
+    if (resident(slot))
+        return true;
+    if (!s.data || s.channels != 1)
+        return fail("SPU2 needs a mono sample");
+    if (s.sampleRate < 4000 || s.sampleRate > 48000)
+        return fail("rate must be 4-48 kHz for SPU2");
+    const size_t bytes = adpcm::encodedSize(s.frames);
+    uint8_t* buf = (uint8_t*)memalign(64, bytes);
+    if (!buf)
+        return fail("out of memory");
+    adpcm::encodeMono(s.data, s.frames, buf);
+    audio_sound_desc_t desc;
+    desc.adpcm_data = buf;
+    desc.adpcm_size_bytes = (int32_t)bytes;
+    desc.sample_rate_hz = (int32_t)s.sampleRate;
+    desc.channel_count = 1;
+    desc.loops = 0;
+    audio_sound_t handle = AUDIO_SOUND_INVALID;
+    const int rc = audio_sound_load_adpcm(&desc, &handle); // copies; blocks until uploaded
+    free(buf);
+    if (rc != AUDIO_OK || handle == AUDIO_SOUND_INVALID) {
+        stats_.lastError = rc;
+        return fail(rc == -AUDIO_ERR_OUT_OF_SPU_MEMORY ? "SPU2 RAM full" : audio_get_error_message(rc));
+    }
+    spuSlotBytes_[slot] = (uint32_t)bytes;
+    stats_.spuBytes += (uint32_t)bytes;
+    stats_.spuSounds = (uint8_t)(stats_.spuSounds + 1);
+    __atomic_store_n(&spuHandle_[slot], (int32_t)handle, __ATOMIC_RELEASE);
+    return true;
+}
+
+bool Ps2Audio::uploadApcm(int slot, const uint8_t* file, uint32_t size, char* err, size_t cap)
+{
+    auto fail = [&](const char* msg) {
+        if (err && cap)
+            snprintf(err, cap, "%s", msg);
+        return false;
+    };
+    if (!stats_.initialized)
+        return fail("audio not initialised");
+    if (slot < 0 || slot >= cfg::kMaxSamples)
+        return fail("bad slot");
+    audio_sound_t handle = AUDIO_SOUND_INVALID;
+    // The library validates the APCM image; the file buffer is only read.
+    const int rc = audio_sound_load_apcm(file, (int32_t)size, &handle);
+    if (rc != AUDIO_OK || handle == AUDIO_SOUND_INVALID) {
+        stats_.lastError = rc;
+        return fail(rc == -AUDIO_ERR_OUT_OF_SPU_MEMORY ? "SPU2 RAM full"
+                    : rc == -AUDIO_ERR_BAD_SOUND_DATA  ? "not a valid .adp file"
+                                                      : audio_get_error_message(rc));
+    }
+    spuSlotBytes_[slot] = size;
+    stats_.spuBytes += size;
+    stats_.spuSounds = (uint8_t)(stats_.spuSounds + 1);
+    __atomic_store_n(&spuHandle_[slot], (int32_t)handle, __ATOMIC_RELEASE);
+    return true;
+}
+
+void Ps2Audio::unload(int slot)
+{
+    if (!resident(slot))
+        return;
+    // Invalidate first so the render thread stops dispatching notes for it,
+    // then free the SPU2 memory (which also stops any voice still playing it).
+    const int32_t handle = spuHandle_[slot];
+    __atomic_store_n(&spuHandle_[slot], (int32_t)AUDIO_SOUND_INVALID, __ATOMIC_RELEASE);
+    audio_sound_free(handle);
+    stats_.spuBytes -= spuSlotBytes_[slot];
+    spuSlotBytes_[slot] = 0;
+    if (stats_.spuSounds)
+        stats_.spuSounds = (uint8_t)(stats_.spuSounds - 1);
+}
+
 void Ps2Audio::uploadHardwareSamples(const SampleBank& bank, Session& session, StatusLog& log)
 {
     if (!stats_.initialized) {
         log.set(Subsystem::Spu2, Health::Skipped, "audio not initialised");
         return;
     }
-    int loaded = 0, failed = 0, lastErr = 0;
+    int loaded = 0, failed = 0;
+    char err[48] = "";
     for (int i = 0; i < bank.count(); ++i) {
         const Sample* s = bank.get(i);
-        if (!s || s->channels != 1 || s->sampleRate < 4000 || s->sampleRate > 48000)
+        if (!s || !s->builtin || s->channels != 1 || s->sampleRate < 4000 || s->sampleRate > 48000)
             continue;
-        const size_t bytes = adpcm::encodedSize(s->frames);
-        uint8_t* buf = (uint8_t*)memalign(64, bytes);
-        if (!buf) {
-            ++failed;
-            continue;
-        }
-        adpcm::encodeMono(s->data, s->frames, buf);
-        audio_sound_desc_t desc;
-        desc.adpcm_data = buf;
-        desc.adpcm_size_bytes = (int32_t)bytes;
-        desc.sample_rate_hz = (int32_t)s->sampleRate;
-        desc.channel_count = 1;
-        desc.loops = 0;
-        audio_sound_t handle = AUDIO_SOUND_INVALID;
-        const int rc = audio_sound_load_adpcm(&desc, &handle); // copies; blocks until uploaded
-        free(buf);
-        if (rc == AUDIO_OK && handle != AUDIO_SOUND_INVALID) {
-            spuHandle_[i] = handle;
-            stats_.spuBytes += (uint32_t)bytes;
+        if (uploadPcm(i, *s, err, sizeof(err))) {
             session.setSampleHwReady(i, true);
             ++loaded;
         } else {
             ++failed;
-            lastErr = rc;
         }
     }
-    stats_.spuSounds = (uint8_t)loaded;
     if (failed == 0)
         log.set(Subsystem::Spu2, Health::Ok, "%d sounds, %lu KiB in SPU2 RAM", loaded, (unsigned long)(stats_.spuBytes / 1024));
     else if (loaded > 0)
-        log.set(Subsystem::Spu2, Health::Warning, "%d ok, %d failed: %s", loaded, failed, audio_get_error_message(lastErr));
+        log.set(Subsystem::Spu2, Health::Warning, "%d ok, %d failed: %s", loaded, failed, err);
     else
-        log.fail(Subsystem::Spu2, "upload failed: %s", audio_get_error_message(lastErr));
+        log.fail(Subsystem::Spu2, "upload failed: %s", err);
 }
 
 bool Ps2Audio::start(AudioEngine& engine, StatusLog& log)
@@ -180,33 +250,45 @@ void Ps2Audio::threadEntry(void* self)
     static_cast<Ps2Audio*>(self)->run();
 }
 
-bool Ps2Audio::queueBlock(const int16_t* pcm, int frames)
+bool Ps2Audio::submitTail()
 {
-    const uint8_t* p = (const uint8_t*)pcm;
-    int remaining = frames * kBytesPerFrame;
-    // The library ring (64 KiB) is far larger than our target depth, so this
-    // is normally accepted in one call; retry briefly if not.
-    for (int attempt = 0; remaining > 0 && attempt < 50; ++attempt) {
-        const int n = audio_stream_queue_pcm(p, remaining);
+    // audio_stream_queue_pcm() never waits and may accept fewer bytes than
+    // offered when the ring is full. Whatever is not accepted stays in the
+    // block and is resubmitted before anything new is rendered, so no audio
+    // is dropped and written_ only ever counts frames the stream holds.
+    // That keeps heard = written_ - queued exact.
+    while (tailFrames_ > 0) {
+        const uint8_t* p = (const uint8_t*)g_block + tailOffset_ * kBytesPerFrame;
+        const int n = audio_stream_queue_pcm(p, tailFrames_ * kBytesPerFrame);
         if (n < 0) {
             stats_.lastError = n;
             stats_.rpcErrors = stats_.rpcErrors + 1;
+            // Stream is unusable: abandon the block but keep the engine
+            // clock consistent with what was rendered.
+            written_ += (uint32_t)tailFrames_;
+            tailFrames_ = 0;
             return false;
         }
-        p += n;
-        remaining -= n;
-        if (remaining > 0)
-            ps2sys::sleepUs(1000);
+        const int frames = n / kBytesPerFrame;
+        if (frames == 0)
+            return true; // full; try again next iteration
+        written_ += (uint32_t)frames;
+        tailOffset_ += frames;
+        tailFrames_ -= frames;
+        if (tailFrames_ > 0)
+            stats_.tailRetries = stats_.tailRetries + 1;
     }
-    return remaining == 0;
+    return true;
 }
 
 void Ps2Audio::collectHwTriggers()
 {
     const int n = engine_->hwTriggerCount();
     for (int i = 0; i < n; ++i) {
-        if (pendingCount_ >= kPending)
-            break; // counted by the engine as dropped only if its own buffer overflows
+        if (pendingCount_ >= kPending) {
+            stats_.hwDropped = stats_.hwDropped + (uint32_t)(n - i);
+            break;
+        }
         const HwTrigger& t = engine_->hwTrigger(i);
         Pending& p = pending_[pendingCount_++];
         p.frame = t.frame;
@@ -237,9 +319,13 @@ void Ps2Audio::dispatchHw(uint32_t heard)
             spuVolume_[spuCh] = (int8_t)p.volume;
             spuPan_[spuCh] = p.pan;
         }
-        if (spuHandle_[p.sample] != AUDIO_SOUND_INVALID) {
-            const int rc = audio_channel_play_sound(spuCh, spuHandle_[p.sample]);
-            if (rc < 0) {
+        const int32_t handle = __atomic_load_n(&spuHandle_[p.sample], __ATOMIC_ACQUIRE);
+        if (handle != AUDIO_SOUND_INVALID) {
+            const int rc = audio_channel_play_sound(spuCh, handle);
+            if (rc == -AUDIO_ERR_INVALID_ARGUMENT) {
+                // The UI unloaded this sample between the check and the call.
+                stats_.hwStale = stats_.hwStale + 1;
+            } else if (rc < 0) {
                 stats_.lastError = rc;
                 stats_.rpcErrors = stats_.rpcErrors + 1;
             } else {
@@ -253,6 +339,18 @@ void Ps2Audio::dispatchHw(uint32_t heard)
 void Ps2Audio::run()
 {
     for (;;) {
+        // Finish handing over a partly accepted block before anything else.
+        if (tailFrames_ > 0) {
+            const bool ok = submitTail();
+            if (ok && tailFrames_ == 0)
+                stats_.blocks = stats_.blocks + 1;
+            if (!ok)
+                ps2sys::sleepUs(10000);
+            else if (tailFrames_ > 0)
+                ps2sys::sleepUs(1000);
+            continue;
+        }
+
         const int queuedBytes = audio_stream_get_queued_bytes();
         if (queuedBytes < 0) {
             stats_.lastError = queuedBytes;
@@ -263,10 +361,10 @@ void Ps2Audio::run()
         const uint32_t queued = (uint32_t)queuedBytes / kBytesPerFrame;
         stats_.queuedFrames = queued;
 
-        // What the listener hears now: everything written minus what is
-        // still waiting in the queue. This drives SPU2 note timing and the
-        // UI playhead.
-        const uint32_t heard = written_ - (queued < written_ ? queued : written_);
+        // What the listener hears now: everything accepted minus what is
+        // still waiting in the queue (unsigned arithmetic wraps correctly;
+        // all comparisons below are signed differences).
+        const uint32_t heard = written_ - queued;
         stats_.heardFrame = heard;
         if (pendingCount_)
             dispatchHw(heard);
@@ -287,12 +385,10 @@ void Ps2Audio::run()
             stats_.renderUsAvg = (stats_.renderUsAvg * 15 + us) / 16;
             collectHwTriggers();
 
-            // Advance even if the queue rejected part of the block, so the
-            // engine clock and the playhead estimate stay aligned (the loss
-            // itself shows up as rpcErrors/underruns).
-            if (queueBlock(g_block, kBlockFrames))
+            tailFrames_ = kBlockFrames;
+            tailOffset_ = 0;
+            if (submitTail() && tailFrames_ == 0)
                 stats_.blocks = stats_.blocks + 1;
-            written_ += kBlockFrames;
             if ((int)queued + kBlockFrames >= target)
                 primed_ = true;
             continue; // top up again immediately if still below target

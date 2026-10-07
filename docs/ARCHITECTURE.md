@@ -140,10 +140,58 @@ text screen instead of leaving a black screen.
 | GS VRAM: 2 framebuffers + font | ~2.3 MiB of 4 MiB |
 | SPU2 RAM: kit ADPCM | ~80 KiB of 2 MiB |
 
+## Sample lifecycle (Milestone 2)
+
+Imported samples live in `SampleBank` slots with a state machine
+`Empty -> Ready -> Releasing -> Acked -> Empty` and a generation counter that
+changes when a slot is reused.
+
+1. UI `requestRelease(slot)`: `Ready -> Releasing`. `get()` returns null from
+   then on, so the audio thread cannot start a new voice on it.
+2. UI posts `ReleaseSample(slot)`. The audio thread applies it between blocks:
+   it stops every voice reading the sample, forgets it in its channel and
+   SPU2-ready tables, and only then marks the slot `Acked`.
+3. UI `reap()` frees the PCM of `Acked` slots.
+
+The audio thread never allocates, frees, locks or does I/O, and the UI never
+frees memory the audio thread can still read. If the command queue is full the
+release is retried from `Session::pumpReleases()`; with no audio thread running
+the UI acknowledges itself. Imported PCM is capped at 12 MiB in total and 3 MiB
+per sample; `SampleLibrary` frees unused imports and retries once when a load
+would exceed the cap or the 32 slots.
+
+`SampleLibrary` (UI thread) owns loading: a request queue and one job at a
+time, advanced once per frame by one 32 KiB file read. It parses and converts
+only after the whole file is in memory, publishes the slot in one step, then
+performs the requested action (assign, preview, SPU2 upload). `.adp` files
+become SPU2-only slots (no PCM in EE RAM). References are portable `samples:`
+paths (see PROJECT_FORMAT.md) resolved against `mass0:` and `mass1:`.
+
+## Audio output audit (Milestone 1 follow-up)
+
+`audio_stream_queue_pcm()` never waits and returns fewer bytes than offered when
+the stream is full. The render loop used to retry for up to 50 ms inside the
+render thread and, on a partial accept, drop the tail while still advancing
+`written_`, so `heard = written - queued` (the playhead and the SPU2 trigger
+clock) could drift from what the stream really held. It now keeps the
+unaccepted tail, resubmits it before rendering anything new, and advances
+`written_` only by frames the stream accepted, so `heard` stays exact and no
+audio is lost. `written_` and `heard` use unsigned wraparound arithmetic and
+signed differences for comparisons. Triggers that overflow the pending list are
+counted (`hwDropped`); notes for a sample unloaded in the meantime are counted
+separately (`hwStale`). Underruns are counted once per empty-queue event.
+
+## Pattern switching
+
+`QueuePattern(pattern, mode)` makes the engine switch at the next beat (every
+4 steps) or bar (every 16 steps), or at the loop point. A switch is taken only
+when the target pattern has a step at that position, otherwise it waits for the
+loop. Stop applies a pending switch at once. `Session::selectPattern` moves the
+editing pattern immediately and queues the engine switch per
+`Session::switchMode()`.
+
 ## Planned extension points
 
-* Deferred sample release: bank slots will carry a generation counter; the
-  engine acknowledges via the status block before memory is freed.
 * Mixer routing: `ChannelData::route` is already saved; inserts will be a
   fixed array of small DSP modules per strip.
 * Playlist: `Project::clips` (pattern references, not copies) is already in

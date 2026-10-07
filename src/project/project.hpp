@@ -13,7 +13,7 @@
 
 struct ChannelData {
     char name[12];
-    char sampleRef[48];   // "builtin:KICK" or a storage path (Milestone 2)
+    char sampleRef[64];   // "builtin:KICK" or "samples:DIR/NAME.WAV"
     int8_t sampleSlot;    // runtime-resolved bank slot, -1 = none (not saved)
     uint8_t volume;       // 0..100
     int8_t pan;           // -100..100

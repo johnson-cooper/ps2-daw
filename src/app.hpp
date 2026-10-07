@@ -12,6 +12,8 @@
 #include "platform/ps2_filesystem.hpp"
 #include "platform/ps2_graphics.hpp"
 #include "platform/ps2_input.hpp"
+#include "platform/selftest_source.hpp"
+#include "project/sample_library.hpp"
 #include "project/session.hpp"
 #include "ui/browser.hpp"
 #include "ui/channel_rack.hpp"
@@ -34,6 +36,8 @@ private:
     void handleGlobalKeys(const InputState& in);
     void drawHeader();
     void drawStatusBar(View& view);
+    void serviceDebugMailbox(InputState& in);
+    void publishTelemetry();
     static bool waitForAudio();
 
     StatusLog log_;
@@ -44,6 +48,8 @@ private:
     SampleBank bank_;
     AudioEngine engine_;
     Session session_;
+    SelfTestSource testSource_;
+    SampleLibrary library_;
     ui::ContextMenu menu_;
     UiContext ctx_;
 
@@ -63,6 +69,7 @@ private:
     // Left-stick-as-D-pad repeat state.
     uint32_t stickDir_ = 0;
     uint32_t stickNextMs_ = 0;
+    uint32_t seenLibraryMsg_ = 0;
 
     static App* instance_;
 };

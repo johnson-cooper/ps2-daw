@@ -45,6 +45,7 @@ struct EngineStatus {
     volatile uint32_t renderedFrames = 0;  // absolute engine clock (wraps after ~24 h)
     volatile uint8_t transport = 0;        // Transport::State
     volatile uint8_t pattern = 0;
+    volatile uint8_t queuedPattern = 0xff; // pending switch target, 0xff = none
     volatile uint32_t bpmCenti = cfg::kDefaultBpmCenti;
     volatile uint32_t songFrames = 0;
 
@@ -107,6 +108,8 @@ private:
     HwTrigger hw_[kMaxHwPerBlock];
     int hwCount_;
     uint32_t blockStart_;
+    int queuedPattern_;     // -1 = none
+    int queuedQuantum_;     // steps between allowed switch points
 
     EngineStatus status_;
 };

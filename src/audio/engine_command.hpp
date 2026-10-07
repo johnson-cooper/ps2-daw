@@ -16,7 +16,8 @@ enum class CmdType : uint8_t {
     SetStep,             // a = pattern, b = channel, c = step, value = velocity (0 = off)
     ClearPattern,        // a = pattern
     SetPatternLength,    // a = pattern, value = steps
-    SelectPattern,       // a = pattern
+    SelectPattern,       // a = pattern (immediate; cancels a queued switch)
+    QueuePattern,        // a = pattern, b = SwitchMode: switch on the next beat/bar boundary
     SetChannelSample,    // a = channel, value = sample slot (-1 = none)
     SetChannelVolume,    // a = channel, value = 0..100
     SetChannelPan,       // a = channel, value = -100..100
@@ -27,7 +28,15 @@ enum class CmdType : uint8_t {
     PreviewChannel,      // a = channel
     PreviewSample,       // value = sample slot, b = VoiceMode
     SetSampleHwReady,    // value = sample slot, a = 0/1
+    ReleaseSample,       // value = sample slot: stop its voices, then acknowledge
     AllVoicesOff,
+};
+
+// When a pattern change takes effect while the transport is playing.
+enum class SwitchMode : uint8_t {
+    Immediate = 0, // next step, mid-bar
+    NextBeat = 1,  // next beat boundary (every 4 steps from the pattern start)
+    NextBar = 2,   // next bar boundary (every 16 steps), or when the pattern loops
 };
 
 // How a channel's sound is produced.

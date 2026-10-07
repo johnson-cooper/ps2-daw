@@ -379,6 +379,9 @@ static void testQueue()
     CHECK(!q.pop(v));
 }
 
+int runSampleTests();
+int runWorkflowTests();
+
 int main()
 {
     printf("running host tests\n");
@@ -396,6 +399,8 @@ int main()
     testProjectRoundTrip();
     testWav();
     testAdpcm();
+    g_failures += runSampleTests();
+    g_failures += runWorkflowTests();
     if (g_failures) {
         printf("FAILED: %d check(s)\n", g_failures);
         return 1;

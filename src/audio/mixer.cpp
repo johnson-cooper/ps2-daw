@@ -142,6 +142,19 @@ void Mixer::releaseAll()
     }
 }
 
+int Mixer::stopSample(const Sample* sample)
+{
+    int n = 0;
+    for (auto& v : voices_) {
+        if (v.active && v.sample == sample) {
+            v.active = 0;
+            v.sample = nullptr;
+            ++n;
+        }
+    }
+    return n;
+}
+
 int Mixer::activeVoices() const
 {
     int n = 0;

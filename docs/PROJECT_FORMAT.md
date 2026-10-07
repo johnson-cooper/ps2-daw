@@ -26,9 +26,22 @@ bytes (printable ASCII; anything else is replaced with `?` on load).
 | `PLST` | u16 clip count, then per clip: u8 track, u8 pattern, u16 start bar, u16 length bars (reserved for the playlist) |
 | `END ` | u32 CRC-32 (IEEE) of every byte before this chunk |
 
-Sample references: `builtin:<NAME>` for the generated kit; storage paths for
-user samples (Milestone 2). Bank slots are resolved at load time and never
-stored.
+Sample references (at most 63 characters):
+
+* `builtin:<NAME>` - the generated kit.
+* `samples:<REL>` - a file under `<root>/PS2DAW/SAMPLES/`, e.g.
+  `samples:DRUMS/KICK.WAV`. `<REL>` uses `/` separators and printable ASCII,
+  with no `..`, no empty, absolute or device-prefixed components, none of
+  `: \ * ? " < > |`, and no component ending in a space or `.`. References never
+  name `mass0:` or `mass1:`, so a project is portable between USB ports.
+
+References that break these rules stay in the file but are never resolved and
+are reported as missing. Bank slots are resolved at load time and never stored.
+A missing file leaves the channel's reference intact (so saving again does not
+lose it) with no sample until the file returns.
+
+Slot files are written with a `.TMP` + `.BAK` rotation (see
+`src/project/slot_store.hpp`).
 
 Validation on load: every length is bounds-checked against the real buffer,
 values are clamped to legal ranges, a missing `PROJ` or `END ` chunk or a CRC

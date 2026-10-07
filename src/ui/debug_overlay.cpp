@@ -20,7 +20,7 @@ void drawDebugOverlay(Gfx& g, const UiContext& ctx, uint32_t fpsTimes10, uint32_
     const uint32_t blockUs = Ps2Audio::kBlockFrames * 1000000u / cfg::kSampleRate;
     static const char* const kTransport[] = {"STOP", "PLAY", "PAUSE"};
 
-    char lines[20][56];
+    char lines[24][56];
     int n = 0;
     snprintf(lines[n++], 56, PS2DAW_NAME " " PS2DAW_VERSION);
     snprintf(lines[n++], 56, "built " PS2DAW_BUILD_DATE);
@@ -39,8 +39,13 @@ void drawDebugOverlay(Gfx& g, const UiContext& ctx, uint32_t fpsTimes10, uint32_
     snprintf(lines[n++], 56, "SW voices %lu/%d  steals %lu", (unsigned long)es.voicesActive, cfg::kMaxVoices, (unsigned long)es.voiceSteals);
     snprintf(lines[n++], 56, "SPU2 notes %lu  late max %lu us  drop %lu", (unsigned long)as.hwPlayed, (unsigned long)as.hwLateUs,
              (unsigned long)es.hwDropped);
-    snprintf(lines[n++], 56, "samples %d (%lu KiB)  SPU2 %d (%lu KiB)", ctx.bank.count(), (unsigned long)(ctx.bank.bytesUsed() / 1024),
-             as.spuSounds, (unsigned long)(as.spuBytes / 1024));
+    snprintf(lines[n++], 56, "samples %d/%d  PCM %lu KiB (imp %lu/%lu)", ctx.bank.liveCount(), cfg::kMaxSamples,
+             (unsigned long)(ctx.bank.bytesUsed() / 1024), (unsigned long)(ctx.bank.externalBytesUsed() / 1024),
+             (unsigned long)(SampleBank::kMaxExternalBytes / 1024));
+    snprintf(lines[n++], 56, "SPU2 %d sounds %lu KiB  stale %lu  tailRetry %lu", as.spuSounds, (unsigned long)(as.spuBytes / 1024),
+             (unsigned long)as.hwStale, (unsigned long)as.tailRetries);
+    snprintf(lines[n++], 56, "loader %s ok %lu fail %lu missing %d", ctx.library.busy() ? "BUSY" : "idle",
+             (unsigned long)ctx.library.loadedOk(), (unsigned long)ctx.library.loadFailed(), ctx.library.missingCount());
     snprintf(lines[n++], 56, "clipped samples %lu  cmds %lu", (unsigned long)es.clipSamples, (unsigned long)es.commands);
     snprintf(lines[n++], 56, "EE heap in use %lu KiB", (unsigned long)(ps2sys::heapUsed() / 1024));
     snprintf(lines[n++], 56, "storage %s  dropped cmds %lu", ctx.storage.rootName(), (unsigned long)ctx.session.droppedCommands());

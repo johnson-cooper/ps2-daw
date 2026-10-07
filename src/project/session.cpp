@@ -2,15 +2,16 @@
 
 #include <string.h>
 
+#include "audio/sample_ref.hpp"
 #include "core/strutil.hpp"
 
-Session::Session(AudioEngine& engine, const SampleBank& bank, bool (*waitFn)())
-    : engine_(engine), bank_(bank), wait_(waitFn), dropped_(0)
+Session::Session(AudioEngine& engine, SampleBank& bank, bool (*waitFn)())
+    : engine_(engine), bank_(bank), wait_(waitFn), dropped_(0), loadSerial_(0), releasePending_(0)
 {
     project_.resetDemo();
 }
 
-void Session::post(CmdType t, int a, int b, int c, int32_t value)
+bool Session::post(CmdType t, int a, int b, int c, int32_t value)
 {
     Command cmd;
     cmd.type = t;
@@ -22,20 +23,17 @@ void Session::post(CmdType t, int a, int b, int c, int32_t value)
     // clears quickly; give up after a bounded wait rather than hanging the UI.
     for (int attempt = 0; attempt < 200; ++attempt) {
         if (engine_.post(cmd))
-            return;
+            return true;
         if (!wait_ || !wait_())
             break;
     }
     ++dropped_;
+    return false;
 }
 
 int Session::resolveSample(const ChannelData& c) const
 {
-    static const char kPrefix[] = "builtin:";
-    if (strncmp(c.sampleRef, kPrefix, sizeof(kPrefix) - 1) == 0)
-        return bank_.findByName(c.sampleRef + sizeof(kPrefix) - 1);
-    // Storage paths are resolved by the sample loader (Milestone 2).
-    return -1;
+    return bank_.findByRef(c.sampleRef);
 }
 
 void Session::loadProject(const Project& p)
@@ -43,9 +41,12 @@ void Session::loadProject(const Project& p)
     post(CmdType::Stop);
     if (&p != &project_)
         project_ = p;
+    // The slot is runtime state (files store only the reference and load with
+    // -1). Keep a slot that is still valid, otherwise resolve by reference.
     for (auto& c : project_.channels)
         if (c.sampleSlot < 0 || !bank_.get(c.sampleSlot))
             c.sampleSlot = (int8_t)resolveSample(c);
+    ++loadSerial_;
     syncAll();
 }
 
@@ -72,7 +73,7 @@ void Session::syncAll()
                 if (pd.velocity[ch][s])
                     post(CmdType::SetStep, pi, ch, s, pd.velocity[ch][s]);
     }
-    post(CmdType::SelectPattern, p.currentPattern);
+    post(CmdType::SelectPattern, p.currentPattern); // immediate: the whole song was just replaced
 }
 
 void Session::play() { post(CmdType::Play); }
@@ -157,7 +158,70 @@ void Session::selectPattern(int pattern)
     if (!inRange(pattern, cfg::kMaxPatterns))
         return;
     project_.currentPattern = (uint8_t)pattern;
-    post(CmdType::SelectPattern, pattern);
+    if (switchMode_ == SwitchMode::Immediate)
+        post(CmdType::SelectPattern, pattern);
+    else
+        post(CmdType::QueuePattern, pattern, (int)switchMode_);
+}
+
+bool Session::patternIsEmpty(int pattern) const
+{
+    if (!inRange(pattern, cfg::kMaxPatterns))
+        return false;
+    const PatternData& pd = project_.patterns[pattern];
+    for (int ch = 0; ch < cfg::kMaxChannels; ++ch)
+        for (int s = 0; s < cfg::kMaxSteps; ++s)
+            if (pd.velocity[ch][s])
+                return false;
+    return true;
+}
+
+bool Session::copyPattern(int src, int dst)
+{
+    if (!inRange(src, cfg::kMaxPatterns) || !inRange(dst, cfg::kMaxPatterns))
+        return false;
+    if (src == dst)
+        return true;
+    PatternData& to = project_.patterns[dst];
+    const PatternData& from = project_.patterns[src];
+    to.length = from.length;
+    memcpy(to.velocity, from.velocity, sizeof(to.velocity));
+    post(CmdType::ClearPattern, dst);
+    post(CmdType::SetPatternLength, dst, 0, 0, to.length);
+    for (int ch = 0; ch < cfg::kMaxChannels; ++ch)
+        for (int s = 0; s < cfg::kMaxSteps; ++s)
+            if (to.velocity[ch][s])
+                post(CmdType::SetStep, dst, ch, s, to.velocity[ch][s]);
+    return true;
+}
+
+int Session::duplicatePattern(int src)
+{
+    if (!inRange(src, cfg::kMaxPatterns))
+        return -1;
+    for (int i = 1; i <= cfg::kMaxPatterns; ++i) {
+        const int dst = (src + i) % cfg::kMaxPatterns;
+        if (dst != src && patternIsEmpty(dst)) {
+            copyPattern(src, dst);
+            // Same name with a copy marker; the user can rename it.
+            char name[sizeof(project_.patterns[0].name)];
+            str::copy(name, sizeof(name), project_.patterns[src].name);
+            const size_t n = strlen(name);
+            if (n + 2 < sizeof(name))
+                str::append(name, sizeof(name), "+");
+            setPatternName(dst, name);
+            selectPattern(dst);
+            return dst;
+        }
+    }
+    return -1;
+}
+
+void Session::setPatternName(int pattern, const char* name)
+{
+    if (!inRange(pattern, cfg::kMaxPatterns) || !name)
+        return;
+    str::copy(project_.patterns[pattern].name, sizeof(project_.patterns[pattern].name), name);
 }
 
 void Session::setVolume(int channel, int volume)
@@ -203,10 +267,76 @@ void Session::setSample(int channel, int slot)
     c.sampleSlot = (int8_t)(s ? slot : -1);
     if (s) {
         str::copy(c.name, sizeof(c.name), s->name);
-        str::copy(c.sampleRef, sizeof(c.sampleRef), s->builtin ? "builtin:" : "");
-        str::append(c.sampleRef, sizeof(c.sampleRef), s->name);
+        str::copy(c.sampleRef, sizeof(c.sampleRef), s->ref);
     }
     post(CmdType::SetChannelSample, channel, 0, 0, c.sampleSlot);
+    // SPU2-only (.adp) samples have no software path.
+    if (s && s->hwOnly)
+        setVoiceMode(channel, VoiceMode::Spu2);
+}
+
+int Session::bindSamples()
+{
+    int unresolved = 0;
+    for (int ch = 0; ch < cfg::kMaxChannels; ++ch) {
+        ChannelData& c = project_.channels[ch];
+        const int slot = resolveSample(c);
+        if (slot != c.sampleSlot) {
+            c.sampleSlot = (int8_t)slot;
+            post(CmdType::SetChannelSample, ch, 0, 0, slot);
+        }
+        if (slot < 0 && sampleref::classify(c.sampleRef) != sampleref::Kind::None &&
+            sampleref::classify(c.sampleRef) != sampleref::Kind::Builtin)
+            ++unresolved;
+        const Sample* s = bank_.get(slot);
+        if (s && s->hwOnly && c.voiceMode != (uint8_t)VoiceMode::Spu2)
+            setVoiceMode(ch, VoiceMode::Spu2);
+    }
+    return unresolved;
+}
+
+bool Session::slotInUse(int slot) const
+{
+    for (int ch = 0; ch < cfg::kMaxChannels; ++ch)
+        if (project_.channels[ch].sampleSlot == slot)
+            return true;
+    return false;
+}
+
+bool Session::releaseSample(int slot)
+{
+    if (slotInUse(slot) || !bank_.requestRelease(slot))
+        return false;
+    // The state change above comes first: from here the audio thread can no
+    // longer start voices on this slot. The command makes it drop the ones it
+    // already has and acknowledge, after which reap() may free the memory.
+    if (!post(CmdType::ReleaseSample, 0, 0, 0, slot)) {
+        if (wait_ && wait_())
+            releasePending_ |= 1u << slot; // audio is alive; retry from pumpReleases()
+        else
+            bank_.acknowledgeRelease(slot); // no audio thread exists to read it
+    }
+    return true;
+}
+
+void Session::pumpReleases()
+{
+    if (!releasePending_)
+        return;
+    for (int slot = 0; slot < cfg::kMaxSamples; ++slot) {
+        if (!(releasePending_ & (1u << slot)))
+            continue;
+        if (!bank_.isReleasing(slot)) {
+            releasePending_ &= ~(1u << slot);
+            continue;
+        }
+        Command cmd;
+        cmd.type = CmdType::ReleaseSample;
+        cmd.a = cmd.b = cmd.c = 0;
+        cmd.value = slot;
+        if (engine_.post(cmd))
+            releasePending_ &= ~(1u << slot);
+    }
 }
 
 void Session::setVoiceMode(int channel, VoiceMode mode)

@@ -12,9 +12,10 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include "audio/sample_io.hpp"
 #include "core/status_log.hpp"
 
-class Storage {
+class Storage : public SampleFileSource {
 public:
     static constexpr int kMaxRoots = 2;
     static constexpr const char* kAppDir = "PS2DAW";
@@ -33,6 +34,7 @@ public:
 
     bool available() const { return driversOk_; }
     bool ready() const { return readyRoot_ >= 0; }
+    bool rootReady(int i) const { return i >= 0 && i < kMaxRoots && (rootMask_ & (1u << i)); }
     const char* rootName() const; // "mass0:" or "none"
     const char* elfPath() const { return elfPath_; }
 
@@ -44,12 +46,29 @@ public:
     int readFile(const char* path, uint8_t* buf, size_t cap) const;
     bool writeFile(const char* path, const uint8_t* data, size_t len) const;
     bool ensureDir(const char* path) const;
+    bool fileExists(const char* path) const;
+    bool removeFile(const char* path) const;
+    bool renameFile(const char* from, const char* to) const;
     // Lists up to `max` entries; returns count or -1.
-    int listDir(const char* path, DirEntry* out, int max) const;
+    int listDir(const char* path, DirEntry* out, int max, bool* truncated = nullptr) const;
+
+    // ---- Sample folder: <root>/PS2DAW/SAMPLES, on whichever root has it ----
+    // Lists a sub-directory of the sample folder (rel may be ""). Returns the
+    // entry count, -1 if no ready root has the folder (also: no USB drive).
+    // At most `max` entries are returned; *truncated is set if there were more.
+    int listSamples(const char* rel, DirEntry* out, int max, bool* truncated) const;
+    // Creates <root>/PS2DAW/SAMPLES on the first ready root.
+    bool createSampleDir() const;
+
+    // SampleFileSource
+    int openSample(const char* rel, uint32_t* size) override;
+    int read(int handle, uint8_t* buf, uint32_t n) override;
+    void close(int handle) override;
 
 private:
     bool driversOk_ = false;
     int readyRoot_ = -1;
+    uint32_t rootMask_ = 0;
     uint32_t lastProbeMs_ = 0;
     uint32_t firstProbeMs_ = 0;
     uint32_t probes_ = 0;

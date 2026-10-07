@@ -1,6 +1,9 @@
 # Hardware testing
 
-Real PS2 hardware is the reference. PCSX2 is not required.
+Real PS2 hardware is the final authority. The development loop is
+PS2Build MCP (build) -> PCSX2 MCP (debugger-driven validation) -> you, on
+hardware. PCSX2 results are never reported as hardware results; the README
+keeps the columns separate. You do not need PCSX2 to test.
 
 ## Build
 
@@ -38,6 +41,43 @@ with your usual ELF launcher.
     `mass0: ready`; Save to USB, change something, Load from USB restores it.
 13. **Controller hot-plug (optional)** - unplug and replug the pad.
 
+## Milestone 2 + 3 test plan (USB samples, patterns, safe saves)
+
+Prepare a FAT32 stick: copy a few WAV files (mono and stereo, 44.1/48 kHz,
+8 or 16 bit) into `PS2DAW/SAMPLES/` and a sub-folder such as `DRUMS/`. Put one
+non-audio file and one WAV over 3 MiB there too. If you have a `.adp` file, add it.
+
+1. **Browser, USB** - BROWSER > L2 (USB). Folders first, then files with type and
+   size; the non-audio file is dimmed. If the folder is missing the screen says
+   so; R2 > "Create PS2DAW/SAMPLES folder" creates it.
+2. **Load + preview** - on a WAV: Square previews (the first press loads it; the
+   bottom line shows progress). Watch the debug overlay (R3) while a large file
+   loads **with the demo beat playing**: note any `underruns` increase. This is
+   the key hardware unknown of this milestone.
+3. **Assign** - Cross assigns to the target channel (L1/R1 changes it). The
+   rack shows the new name; the beat plays it.
+4. **Rejections** - the oversized WAV and the non-audio file give a readable,
+   sticky error line, and nothing else breaks.
+5. **SPU2** - R2 menu on a mono sample: "Upload to SPU2 RAM", then Triangle
+   previews it on a hardware voice; the footer shows SPU2 KB used. A stereo
+   sample is refused politely. A `.adp` loads straight to SPU2.
+6. **Unload** - R2 > "Unload sample" frees RAM (the PCM total in the footer
+   drops); it is refused while a channel uses the sample.
+7. **Save/load round trip** - assign two imports, PROJECT > Name (edit), Save to
+   USB, then Load. PROJECT > File slot shows `<n> NAME` for the slot.
+8. **Missing sample** - rename one WAV on the stick, Load the slot: the song
+   still loads and plays, and PROJECT > Missing samples lists the file. Rename
+   it back, Load again: it binds.
+9. **Port independence** - move the stick to the other USB port, Load: same result.
+10. **Safe save** - Save twice (a `SLOTn.BAK` appears). Unplug the stick during a
+    save if you dare; the previous save must still load. Corrupting
+    `SLOTn.ps2daw` makes Load use the `.BAK` and say so.
+11. **Patterns** - rack Triangle > Pattern tools: Duplicate, Copy to (asks before
+    overwriting), Clear (asks), Name, "Switch while playing: next bar". With the
+    beat playing, press R2 to change pattern: the header shows `P1>2` and the
+    switch lands on the bar line.
+12. **Load confirmation** - edit something, then Load: it asks for a second Cross.
+
 ## What to report
 
 * Console model (e.g. SCPH-30001, 70012, 90001), region, how you launched it
@@ -49,6 +89,9 @@ with your usual ELF launcher.
   working but not the other (stream vs SPU2 test tone).
 * Exact build errors from `ps2build build`, if any.
 * For a hang: the last message shown on the boot screen.
+* For Milestone 2: the `underruns` / `rpc err` / `tailRetry` counters from the
+  overlay before and after loading a large WAV during playback, and the stick's
+  brand, size and filesystem.
 
 ## Host-side checks (no PS2 needed)
 

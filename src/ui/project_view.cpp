@@ -4,18 +4,36 @@
 #include <string.h>
 
 #include "audio/drum_synth.hpp"
+#include "core/strutil.hpp"
 #include "project/project_io.hpp"
+#include "project/slot_store.hpp"
 #include "ui/font.hpp"
 #include "ui/theme.hpp"
 
 namespace {
-constexpr int kRowH = 20;
+constexpr int kRowH = 19;
 constexpr int kLeftX = theme::kSafeLeft + 8;
 constexpr int kListY = kViewTop + 28;
 const int kLengths[] = {8, 12, 16, 24, 32, 48, 64};
 
 // Shared I/O buffer for project files (64 KiB, static: no large stack use).
 uint8_t g_fileBuf[projectio::kMaxFileBytes];
+uint8_t g_verifyBuf[projectio::kMaxFileBytes];
+
+const char kNameChars[] = " ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_";
+
+class StorageFiles : public ProjectFiles {
+public:
+    explicit StorageFiles(Storage& s) : st_(s) {}
+    int readAll(const char* path, uint8_t* buf, size_t cap) override { return st_.readFile(path, buf, cap); }
+    bool writeAll(const char* path, const uint8_t* d, size_t n) override { return st_.writeFile(path, d, n); }
+    bool renameTo(const char* a, const char* b) override { return st_.renameFile(a, b); }
+    bool removeFile(const char* p) override { return st_.removeFile(p); }
+    bool exists(const char* p) override { return st_.fileExists(p); }
+
+private:
+    Storage& st_;
+};
 } // namespace
 
 const char* ProjectView::hint() const
@@ -50,64 +68,126 @@ void ProjectView::adjust(int row, int dir, bool fine, UiContext& ctx)
         ctx.audio.setLatencyFrames(ctx.audio.latencyFrames() + dir * (fine ? 128 : 512));
         break;
     case RowSlot:
-        slot_ = slot_ + dir < 1 ? 1 : (slot_ + dir > 8 ? 8 : slot_ + dir);
+        slot_ = slot_ + dir < 1 ? 1 : (slot_ + dir > slotstore::kSlots ? slotstore::kSlots : slot_ + dir);
+        confirmLoad_ = false;
         break;
     default:
         break;
     }
 }
 
+bool ProjectView::modified(UiContext& ctx)
+{
+    const size_t n = projectio::save(ctx.session.project(), g_fileBuf, sizeof(g_fileBuf));
+    if (n == 0)
+        return true;
+    const uint32_t crc = projectio::crc32(g_fileBuf, n);
+    if (!haveSavedCrc_) { // first look: the song as booted counts as saved
+        haveSavedCrc_ = true;
+        savedCrc_ = crc;
+    }
+    return crc != savedCrc_;
+}
+
+void ProjectView::refreshSlotInfo(UiContext& ctx)
+{
+    slotInfoFor_ = slot_;
+    memset(&slotInfo_, 0, sizeof(slotInfo_));
+    char dir[64];
+    if (!ctx.storage.ready() || !ctx.storage.appPath(dir, sizeof(dir), ""))
+        return;
+    StorageFiles fs(ctx.storage);
+    slotInfo_ = slotstore::peek(fs, dir, slot_, g_fileBuf, sizeof(g_fileBuf));
+}
+
 void ProjectView::save(UiContext& ctx)
 {
     Storage& st = ctx.storage;
-    char dir[64], path[96], rel[32];
+    char dir[64];
     if (!st.ready() || !st.appPath(dir, sizeof(dir), "")) {
         ctx.log.error(Subsystem::Project, "save: no USB drive ready");
         return;
     }
     st.ensureDir(dir);
-    snprintf(rel, sizeof(rel), "SLOT%d.ps2daw", slot_);
-    st.appPath(path, sizeof(path), rel);
+    StorageFiles fs(st);
+    char err[64];
+    if (!slotstore::save(fs, dir, slot_, ctx.session.project(), g_fileBuf, g_verifyBuf, sizeof(g_fileBuf), err, sizeof(err))) {
+        ctx.log.error(Subsystem::Project, "save SLOT%d: %s", slot_, err);
+        return;
+    }
+    modified(ctx); // make sure the baseline exists, then adopt the saved state
     const size_t n = projectio::save(ctx.session.project(), g_fileBuf, sizeof(g_fileBuf));
-    if (n == 0) {
-        ctx.log.error(Subsystem::Project, "save: project too large");
-        return;
-    }
-    if (!st.writeFile(path, g_fileBuf, n)) {
-        ctx.log.error(Subsystem::Project, "write failed: %s", path);
-        return;
-    }
-    ctx.log.set(Subsystem::Project, Health::Ok, "saved %s (%u bytes)", path, (unsigned)n);
-    ctx.toast("Saved %s", path);
+    savedCrc_ = projectio::crc32(g_fileBuf, n);
+    ctx.log.set(Subsystem::Project, Health::Ok, "saved SLOT%d (%u bytes)", slot_, (unsigned)n);
+    ctx.toast("Saved SLOT%d", slot_);
+    refreshSlotInfo(ctx);
 }
 
 void ProjectView::load(UiContext& ctx)
 {
     Storage& st = ctx.storage;
-    char path[96], rel[32];
-    snprintf(rel, sizeof(rel), "SLOT%d.ps2daw", slot_);
-    if (!st.ready() || !st.appPath(path, sizeof(path), rel)) {
+    char dir[64];
+    if (!st.ready() || !st.appPath(dir, sizeof(dir), "")) {
         ctx.log.error(Subsystem::Project, "load: no USB drive ready");
         return;
     }
-    const int n = st.readFile(path, g_fileBuf, sizeof(g_fileBuf));
-    if (n == -2) {
-        ctx.log.error(Subsystem::Project, "%s is too large", path);
+    if (modified(ctx) && !confirmLoad_) {
+        confirmLoad_ = true;
+        ctx.toast("Unsaved changes will be lost. Press " G_CROSS " again to load SLOT%d", slot_);
         return;
     }
-    if (n < 0) {
-        ctx.log.error(Subsystem::Project, "cannot read %s", path);
-        return;
-    }
-    static Project loaded; // ~5 KiB; static keeps it off the stack
+    confirmLoad_ = false;
+    StorageFiles fs(st);
+    static Project loaded; // ~6 KiB; static keeps it off the stack
     char err[64];
-    if (!projectio::load(g_fileBuf, (size_t)n, loaded, err, sizeof(err))) {
-        ctx.log.error(Subsystem::Project, "%s: %s", rel, err);
+    bool backup = false;
+    if (!slotstore::load(fs, dir, slot_, loaded, g_fileBuf, sizeof(g_fileBuf), &backup, err, sizeof(err))) {
+        ctx.log.error(Subsystem::Project, "SLOT%d: %s", slot_, err);
         return;
     }
     ctx.session.loadProject(loaded);
-    ctx.log.set(Subsystem::Project, Health::Ok, "loaded %s", path);
-    ctx.toast("Loaded %s", path);
+    const size_t n = projectio::save(ctx.session.project(), g_fileBuf, sizeof(g_fileBuf));
+    savedCrc_ = projectio::crc32(g_fileBuf, n);
+    haveSavedCrc_ = true;
+    if (backup) {
+        ctx.log.set(Subsystem::Project, Health::Warning, "SLOT%d damaged: loaded .BAK", slot_);
+        ctx.toast("SLOT%d was damaged: recovered the previous save", slot_);
+    } else {
+        ctx.log.set(Subsystem::Project, Health::Ok, "loaded SLOT%d", slot_);
+        ctx.toast("Loaded SLOT%d (samples load in the background)", slot_);
+    }
+}
+
+void ProjectView::editName(const InputState& in, UiContext& ctx)
+{
+    Session& s = ctx.session;
+    char name[sizeof(s.project().name)];
+    str::copy(name, sizeof(name), s.project().name);
+    int len = (int)strlen(name);
+    if (nameCursor_ > len)
+        nameCursor_ = len;
+    const int kChars = (int)sizeof(kNameChars) - 1;
+    if (in.rep(btn::Left) && nameCursor_ > 0)
+        --nameCursor_;
+    if (in.rep(btn::Right) && nameCursor_ < (int)sizeof(name) - 2)
+        ++nameCursor_;
+    if (in.rep(btn::Up) || in.rep(btn::Down)) {
+        while (len <= nameCursor_ && len < (int)sizeof(name) - 1)
+            name[len++] = ' ';
+        name[len] = '\0';
+        int idx = 0;
+        for (int i = 0; i < kChars; ++i)
+            if (kNameChars[i] == name[nameCursor_])
+                idx = i;
+        idx = (idx + (in.rep(btn::Up) ? 1 : kChars - 1)) % kChars;
+        name[nameCursor_] = kNameChars[idx];
+        // Trailing spaces carry no information.
+        for (int i = (int)strlen(name) - 1; i > 0 && name[i] == ' ' && i > nameCursor_; --i)
+            name[i] = '\0';
+        str::copy(s.project().name, sizeof(s.project().name), name);
+    }
+    if (in.hit(btn::Cross) || in.hit(btn::Circle))
+        nameEdit_ = false;
 }
 
 void ProjectView::activate(int row, UiContext& ctx)
@@ -115,6 +195,20 @@ void ProjectView::activate(int row, UiContext& ctx)
     Session& s = ctx.session;
     const int tone = (int)drumsynth::Kind::TestTone;
     switch (row) {
+    case RowName:
+        nameEdit_ = true;
+        nameCursor_ = 0;
+        ctx.toast(G_UP G_DOWN " change letter  " G_LEFT G_RIGHT " move  " G_CROSS " done");
+        break;
+    case RowMissing:
+        if (ctx.library.missingCount() == 0) {
+            ctx.toast("No missing samples");
+        } else {
+            ctx.menu.open("MISSING SAMPLES");
+            for (int i = 0; i < ctx.library.missingCount(); ++i)
+                ctx.menu.add(900 + i, ctx.library.missingRef(i) + (strncmp(ctx.library.missingRef(i), "samples:", 8) == 0 ? 8 : 0), false);
+        }
+        break;
     case RowSave:
         save(ctx);
         break;
@@ -130,6 +224,7 @@ void ProjectView::activate(int row, UiContext& ctx)
             static Project fresh;
             fresh.resetDemo();
             s.loadProject(fresh);
+            haveSavedCrc_ = false; // the new demo is the baseline
             ctx.toast("New demo project");
         }
         break;
@@ -158,13 +253,23 @@ void ProjectView::activate(int row, UiContext& ctx)
 
 void ProjectView::update(const InputState& in, UiContext& ctx)
 {
+    if (ctx.menu.isOpen()) {
+        ctx.menu.update(in); // informational list (missing samples)
+        return;
+    }
+    if (nameEdit_) {
+        editName(in, ctx);
+        return;
+    }
+    if (slotInfoFor_ != slot_ && ctx.storage.ready())
+        refreshSlotInfo(ctx);
     if (in.rep(btn::Up)) {
         row_ = (row_ + RowCount - 1) % RowCount;
-        confirmNew_ = false;
+        confirmNew_ = confirmLoad_ = false;
     }
     if (in.rep(btn::Down)) {
         row_ = (row_ + 1) % RowCount;
-        confirmNew_ = false;
+        confirmNew_ = confirmLoad_ = false;
     }
     if (in.rep(btn::Left))
         adjust(row_, -1, false, ctx);
@@ -185,15 +290,27 @@ void ProjectView::draw(Gfx& g, UiContext& ctx)
     ui::panel(g, x, kViewTop, 300, kViewBottom - kViewTop, "PROJECT");
 
     char v[RowCount][28];
+    snprintf(v[RowName], 28, "%.23s%s", p.name, nameEdit_ ? "_" : "");
     snprintf(v[RowTempo], 28, "%lu.%02lu BPM", (unsigned long)(p.bpmCenti / 100), (unsigned long)(p.bpmCenti % 100));
-    snprintf(v[RowPattern], 28, "%d / %d", p.currentPattern + 1, cfg::kMaxPatterns);
+    snprintf(v[RowPattern], 28, "%d %.10s", p.currentPattern + 1, p.pattern().name);
     snprintf(v[RowLength], 28, "%d steps", p.pattern().length);
     snprintf(v[RowMaster], 28, "%d%%", p.masterVolume);
     const int lat = ctx.audio.latencyFrames();
     snprintf(v[RowLatency], 28, "%d fr %d ms", lat, lat * 1000 / cfg::kSampleRate);
-    snprintf(v[RowSlot], 28, "SLOT%d", slot_);
+    if (!ctx.storage.ready())
+        snprintf(v[RowSlot], 28, "%d", slot_);
+    else if (!slotInfo_.exists)
+        snprintf(v[RowSlot], 28, "%d (empty)", slot_);
+    else if (slotInfo_.corrupt)
+        snprintf(v[RowSlot], 28, "%d DAMAGED", slot_);
+    else
+        snprintf(v[RowSlot], 28, "%d %.11s%s", slot_, slotInfo_.name, slotInfo_.fromBackup ? " BAK" : "");
+    if (ctx.library.missingCount())
+        snprintf(v[RowMissing], 28, "%d (%s)", ctx.library.missingCount(), G_CROSS);
+    else
+        snprintf(v[RowMissing], 28, "none");
     snprintf(v[RowSave], 28, "%s", ctx.storage.ready() ? G_CROSS : "no USB");
-    snprintf(v[RowLoad], 28, "%s", ctx.storage.ready() ? G_CROSS : "no USB");
+    snprintf(v[RowLoad], 28, "%s", !ctx.storage.ready() ? "no USB" : (confirmLoad_ ? "SURE? " G_CROSS : G_CROSS));
     snprintf(v[RowNew], 28, "%s", confirmNew_ ? "SURE? " G_CROSS : G_CROSS);
     snprintf(v[RowToneSw], 28, G_CROSS);
     snprintf(v[RowToneSpu], 28, "%s", ctx.audio.stats().spuSounds ? G_CROSS : "n/a");
@@ -201,7 +318,7 @@ void ProjectView::draw(Gfx& g, UiContext& ctx)
     snprintf(v[RowClearError], 28, "%s", ctx.log.hasError() ? G_CROSS : "-");
 
     static const char* const kNames[RowCount] = {
-        "Tempo", "Pattern", "Length", "Master vol", "Latency", "File slot", "Save to USB", "Load from USB",
+        "Name", "Tempo", "Pattern", "Length", "Master vol", "Latency", "File slot", "Missing samples", "Save to USB", "Load from USB",
         "New (demo)", "Test tone SW", "Test tone SPU2", "Debug overlay", "Clear error",
     };
     for (int r = 0; r < RowCount; ++r) {

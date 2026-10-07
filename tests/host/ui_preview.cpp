@@ -3,15 +3,19 @@
 // one image per screen. Layout check only; the PS2 build never uses this.
 #include <stdarg.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <vector>
 
 #include "audio/drum_synth.hpp"
 #include "platform/ps2_audio.hpp"
+#define private public // preview-only: poke storage state
 #include "platform/ps2_filesystem.hpp"
+#undef private
 #include "platform/ps2_graphics.hpp"
 #include "platform/ps2_input.hpp"
 #include "platform/ps2_system.hpp"
+#include "project/sample_library.hpp"
 #include "project/session.hpp"
 #include "ui/browser.hpp"
 #include "ui/channel_rack.hpp"
@@ -90,6 +94,37 @@ bool Storage::appPath(char*, size_t, const char*) const { return false; }
 int Storage::readFile(const char*, uint8_t*, size_t) const { return -1; }
 bool Storage::writeFile(const char*, const uint8_t*, size_t) const { return false; }
 bool Storage::ensureDir(const char*) const { return false; }
+bool Ps2Audio::uploadPcm(int, const Sample&, char*, size_t) { return false; }
+bool Ps2Audio::uploadApcm(int, const uint8_t*, uint32_t, char*, size_t) { return false; }
+void Ps2Audio::unload(int) {}
+bool Ps2Audio::resident(int slot) const { return slot >= 0 && slot < 8; }
+bool Storage::createSampleDir() const { return false; }
+bool Storage::fileExists(const char*) const { return false; }
+bool Storage::removeFile(const char*) const { return false; }
+bool Storage::renameFile(const char*, const char*) const { return false; }
+int Storage::openSample(const char*, uint32_t*) { return -1; }
+int Storage::read(int, uint8_t*, uint32_t) { return -1; }
+void Storage::close(int) {}
+int Storage::listSamples(const char* rel, DirEntry* out, int max, bool* truncated) const
+{
+    if (truncated)
+        *truncated = false;
+    if (rel && *rel)
+        return 0;
+    static const struct { const char* n; uint32_t sz; bool dir; } e[] = {
+        {"808", 0, true},        {"DRUMS", 0, true},          {"LOOPS", 0, true},        {"AMEN BREAK.WAV", 1240000, false},
+        {"CLAP.WAV", 31000, false}, {"KICK_LONG.WAV", 212000, false}, {"PAD.ADP", 96000, false}, {"README.TXT", 400, false}};
+    int n = 0;
+    for (const auto& x : e) {
+        if (n >= max)
+            break;
+        snprintf(out[n].name, sizeof(out[n].name), "%s", x.n);
+        out[n].size = x.sz;
+        out[n].isDir = x.dir;
+        ++n;
+    }
+    return n;
+}
 namespace ps2sys {
 static ModuleRecord g_mods[] = {{"sio2man", 1, 0, true}, {"padman", 2, 0, true}, {"libsd", 3, 0, true}, {"audio", 4, 0, true},
                                 {"iomanX", 5, 0, true}, {"fileXio", 6, 0, true}, {"usbd", 7, 0, true}, {"bdm", 8, 0, true},
@@ -230,7 +265,15 @@ int main(int argc, char** argv)
     log.set(Subsystem::Storage, Health::Warning, "no USB drive found (still watching)");
     log.set(Subsystem::Project, Health::Ok, "DEMO BEAT");
 
-    UiContext ctx{session, engine, audio, storage, log, bank, menu};
+    storage.driversOk_ = true;
+    storage.rootMask_ = 1;
+    storage.readyRoot_ = 0;
+    static SampleLibrary library(session, bank, storage, &audio, log);
+    {
+        int16_t* d = (int16_t*)calloc(2 * 44100, sizeof(int16_t));
+        bank.add("CLAP.WAV", d, 44100, 44100, 2, false, "samples:CLAP.WAV", 176444);
+    }
+    UiContext ctx{session, engine, audio, storage, log, bank, menu, library};
     ctx.selectedChannel = 2;
     Gfx g;
     ChannelRackView rack;
@@ -245,6 +288,30 @@ int main(int argc, char** argv)
         chrome(g, ctx, i, *views[i]);
         snprintf(path, sizeof(path), "%s/%s.png", outDir, names[i]);
         writePng(path);
+    }
+    // Browser on the USB source, and its action menu.
+    {
+        InputState l2;
+        l2.pressed = l2.repeat = btn::L2;
+        browser.onEnter(ctx);
+        browser.update(l2, ctx);
+        InputState dn;
+        dn.pressed = dn.repeat = btn::Down;
+        for (int i = 0; i < 4; ++i)
+            browser.update(dn, ctx);
+        g.beginFrame(theme::kBackground);
+        chrome(g, ctx, 2, browser);
+        snprintf(path, sizeof(path), "%s/browser_usb.png", outDir);
+        writePng(path);
+        InputState r2;
+        r2.pressed = r2.repeat = btn::R2;
+        browser.update(r2, ctx);
+        g.beginFrame(theme::kBackground);
+        chrome(g, ctx, 2, browser);
+        menu.draw(g);
+        snprintf(path, sizeof(path), "%s/browser_menu.png", outDir);
+        writePng(path);
+        menu.close();
     }
     // Rack with the context menu open, and with the debug overlay.
     InputState in;

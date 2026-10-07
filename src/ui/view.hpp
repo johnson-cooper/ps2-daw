@@ -11,6 +11,7 @@
 #include "platform/ps2_filesystem.hpp"
 #include "platform/ps2_graphics.hpp"
 #include "platform/ps2_input.hpp"
+#include "project/sample_library.hpp"
 #include "project/session.hpp"
 #include "ui/widgets.hpp"
 
@@ -25,6 +26,7 @@ struct UiContext {
     StatusLog& log;
     const SampleBank& bank;
     ui::ContextMenu& menu;
+    SampleLibrary& library;
 
     uint32_t nowMs = 0;
     int selectedChannel = 0;  // shared between rack, mixer and browser

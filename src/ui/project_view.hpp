@@ -2,6 +2,7 @@
 // self-tests, USB save/load, and the boot health table.
 #pragma once
 
+#include "project/slot_store.hpp"
 #include "ui/view.hpp"
 
 class ProjectView : public View {
@@ -13,12 +14,14 @@ public:
 
 private:
     enum Row {
+        RowName,
         RowTempo,
         RowPattern,
         RowLength,
         RowMaster,
         RowLatency,
         RowSlot,
+        RowMissing,
         RowSave,
         RowLoad,
         RowNew,
@@ -33,7 +36,18 @@ private:
     void save(UiContext& ctx);
     void load(UiContext& ctx);
 
+    bool modified(UiContext& ctx);
+    void refreshSlotInfo(UiContext& ctx);
+    void editName(const InputState& in, UiContext& ctx);
+
     int row_ = 0;
     int slot_ = 1;
     bool confirmNew_ = false;
+    bool confirmLoad_ = false;
+    bool nameEdit_ = false;
+    int nameCursor_ = 0;
+    uint32_t savedCrc_ = 0;      // fingerprint of the project as last saved/loaded
+    bool haveSavedCrc_ = false;
+    slotstore::Info slotInfo_ = {};
+    int slotInfoFor_ = 0;        // 0 = stale
 };

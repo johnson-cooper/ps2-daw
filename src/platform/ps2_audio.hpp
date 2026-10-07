@@ -18,11 +18,12 @@
 
 #include "audio/audio_engine.hpp"
 #include "audio/sample.hpp"
+#include "audio/sample_io.hpp"
 #include "core/status_log.hpp"
 
 class Session;
 
-class Ps2Audio {
+class Ps2Audio : public HwSink {
 public:
     struct Stats {
         volatile uint8_t driverLoaded = 0;
@@ -37,6 +38,9 @@ public:
         volatile uint32_t renderUsAvg = 0;      // exponential average
         volatile uint32_t rpcErrors = 0;
         volatile uint32_t hwPlayed = 0;
+        volatile uint32_t hwDropped = 0;        // hardware triggers lost (pending list full)
+        volatile uint32_t hwStale = 0;          // notes skipped: sample unloaded meanwhile
+        volatile uint32_t tailRetries = 0;      // blocks the stream only partly accepted
         volatile uint32_t hwLateUs = 0;         // worst observed dispatch lateness
         volatile int32_t lastError = 0;         // last audio library error code
         uint8_t spuSounds = 0;                  // samples resident in SPU2 RAM
@@ -67,6 +71,13 @@ public:
 
     static const char* errorText(int code);
 
+    // HwSink: explicit SPU2 residency for individual samples (UI thread).
+    bool uploadPcm(int slot, const Sample& s, char* err, size_t cap) override;
+    bool uploadApcm(int slot, const uint8_t* file, uint32_t size, char* err, size_t cap) override;
+    void unload(int slot) override;
+    bool resident(int slot) const override;
+    uint32_t bytesUsed() const override { return stats_.spuBytes; }
+
 private:
     struct Pending {
         uint32_t frame;
@@ -79,15 +90,21 @@ private:
     void run();
     void collectHwTriggers();
     void dispatchHw(uint32_t heard);
-    bool queueBlock(const int16_t* pcm, int frames);
+    // Hands the unsubmitted part of the rendered block to the stream without
+    // waiting. Advances written_ by exactly the frames accepted. Returns false
+    // on a library error (the block is then abandoned).
+    bool submitTail();
 
     AudioEngine* engine_ = nullptr;
     Stats stats_;
     volatile int latency_ = kDefaultLatencyFrames;
-    uint32_t written_ = 0;
+    uint32_t written_ = 0;      // frames ACCEPTED by the stream (not merely rendered)
+    int tailFrames_ = 0;        // rendered frames not yet accepted
+    int tailOffset_ = 0;        // first unaccepted frame within the block
     bool primed_ = false;
 
-    int32_t spuHandle_[cfg::kMaxSamples] = {};
+    int32_t spuHandle_[cfg::kMaxSamples] = {};   // written by the UI thread, read by the render thread
+    uint32_t spuSlotBytes_[cfg::kMaxSamples] = {};
     int8_t spuVolume_[24] = {};
     int8_t spuPan_[24] = {};
 

@@ -29,11 +29,19 @@ private:
         MenuClearPattern,
         MenuLength,
         MenuStop,
+        MenuPatternMenu,
+        MenuDuplicate,
+        MenuCopyTo,
+        MenuRename,
+        MenuSwitchMode,
+        MenuClearConfirm,
         MenuSampleBase = 100,
         MenuLengthBase = 200,
+        MenuCopyBase = 300,
     };
 
     void openChannelMenu(UiContext& ctx);
+    void openPatternMenu(UiContext& ctx);
     void handleMenu(int id, UiContext& ctx);
     void adjustValue(int delta, UiContext& ctx);
     int stepAtColumn() const { return col_ - ColFirstStep + scroll_; }
@@ -42,5 +50,7 @@ private:
     int col_ = ColFirstStep;
     int scroll_ = 0;     // first visible step
     bool editing_ = false;
-    int menuMode_ = 0;   // 0 = channel menu, 1 = sample picker, 2 = length picker
+    bool confirmOverwrite_ = false;
+    int overwriteTarget_ = 0;
+    int menuMode_ = 0;   // 0 = channel menu, 1 = sample picker, 2 = length picker, 3 = pattern menu, 4 = copy target
 };

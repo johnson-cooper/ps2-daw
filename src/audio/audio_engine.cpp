@@ -2,7 +2,7 @@
 
 #include <string.h>
 
-AudioEngine::AudioEngine() : bank_(nullptr), hwCount_(0), blockStart_(0)
+AudioEngine::AudioEngine() : bank_(nullptr), hwCount_(0), blockStart_(0), queuedPattern_(-1), queuedQuantum_(16)
 {
     for (int ch = 0; ch < cfg::kMaxChannels; ++ch) {
         channelSample_[ch] = -1;
@@ -38,6 +38,10 @@ void AudioEngine::apply(const Command& c)
     case CmdType::Stop:
         transport_.stop();
         mixer_.releaseAll();
+        if (queuedPattern_ >= 0) { // nothing to wait for any more
+            sequencer_.select(queuedPattern_);
+            queuedPattern_ = -1;
+        }
         break;
     case CmdType::SetBpm:
         transport_.setBpmCenti((uint32_t)(c.value < 0 ? 0 : c.value));
@@ -53,6 +57,18 @@ void AudioEngine::apply(const Command& c)
         break;
     case CmdType::SelectPattern:
         sequencer_.select(c.a);
+        queuedPattern_ = -1;
+        break;
+    case CmdType::QueuePattern:
+        if (c.a >= cfg::kMaxPatterns)
+            break;
+        if (!transport_.playing() || c.b == (uint8_t)SwitchMode::Immediate) {
+            sequencer_.select(c.a);
+            queuedPattern_ = -1;
+        } else {
+            queuedPattern_ = c.a;
+            queuedQuantum_ = c.b == (uint8_t)SwitchMode::NextBeat ? cfg::kStepsPerBeat : cfg::kStepsPerBeat * cfg::kBeatsPerBar;
+        }
         break;
     case CmdType::SetChannelSample:
         if (channelIndexOk(c.a))
@@ -92,6 +108,19 @@ void AudioEngine::apply(const Command& c)
         if (c.value >= 0 && c.value < cfg::kMaxSamples)
             sampleHwReady_[c.value] = c.a ? 1 : 0;
         break;
+    case CmdType::ReleaseSample:
+        // The UI already made the slot unreadable for new voices (get() is
+        // null). Drop the voices still reading it, forget it everywhere, and
+        // only then acknowledge: after this the UI may free the PCM.
+        if (c.value >= 0 && c.value < cfg::kMaxSamples && bank_) {
+            mixer_.stopSample(bank_->peek(c.value));
+            for (int ch = 0; ch < cfg::kMaxChannels; ++ch)
+                if (channelSample_[ch] == c.value)
+                    channelSample_[ch] = -1;
+            sampleHwReady_[c.value] = 0;
+            bank_->acknowledgeRelease(c.value);
+        }
+        break;
     case CmdType::AllVoicesOff:
         mixer_.releaseAll();
         break;
@@ -119,6 +148,13 @@ void AudioEngine::render(int16_t* out, int frames)
         const uint32_t n = transport_.framesUntilNextStep((uint32_t)(frames - pos));
         if (n == 0) {
             const int step = transport_.consumeStep(sequencer_.length(sequencer_.current()));
+            // A queued pattern starts on a beat/bar boundary (a loop point
+            // always qualifies). The new pattern must have a step here,
+            // otherwise wait for the next loop.
+            if (queuedPattern_ >= 0 && step % queuedQuantum_ == 0 && step < sequencer_.length(queuedPattern_)) {
+                sequencer_.select(queuedPattern_);
+                queuedPattern_ = -1;
+            }
             fireStep(step, (uint32_t)pos);
             continue;
         }
@@ -198,6 +234,7 @@ void AudioEngine::publish()
 {
     status_.transport = (uint8_t)transport_.state();
     status_.pattern = (uint8_t)sequencer_.current();
+    status_.queuedPattern = (uint8_t)(queuedPattern_ < 0 ? 0xff : queuedPattern_);
     status_.bpmCenti = transport_.bpmCenti();
     status_.songFrames = transport_.songFrames();
     for (int ch = 0; ch < cfg::kMaxChannels; ++ch)

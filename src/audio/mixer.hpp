@@ -40,6 +40,9 @@ public:
 
     // Fades every voice out over a few milliseconds.
     void releaseAll();
+    // Immediately silences every voice reading `sample` (its memory is about
+    // to be freed, so no fade). Returns how many were stopped.
+    int stopSample(const Sample* sample);
 
     // Clears the accumulators for a new block.
     void beginBlock(int frames);

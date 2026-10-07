@@ -1,5 +1,7 @@
 #include "ui/channel_rack.hpp"
 
+#include "core/strutil.hpp"
+
 #include <stdio.h>
 #include <string.h>
 
@@ -86,8 +88,32 @@ void ChannelRackView::openChannelMenu(UiContext& ctx)
     ctx.menu.add(MenuFill1, "Fill every step");
     ctx.menu.add(MenuClearChannel, "Clear channel steps");
     ctx.menu.add(MenuLength, "Pattern length...");
-    ctx.menu.add(MenuClearPattern, "Clear whole pattern");
+    ctx.menu.add(MenuPatternMenu, "Pattern tools...");
     ctx.menu.add(MenuStop, "Stop transport");
+}
+
+namespace {
+const char* const kPatternNames[] = {"INTRO", "VERSE", "CHORUS", "BREAK", "DROP", "FILL", "BUILD", "OUTRO", "MAIN", "ALT"};
+const char* switchModeName(SwitchMode m)
+{
+    return m == SwitchMode::NextBar ? "next bar" : (m == SwitchMode::NextBeat ? "next beat" : "immediate");
+}
+} // namespace
+
+void ChannelRackView::openPatternMenu(UiContext& ctx)
+{
+    Session& s = ctx.session;
+    const int p = s.project().currentPattern;
+    char title[40], buf[40];
+    snprintf(title, sizeof(title), "PATTERN %d: %s", p + 1, s.project().patterns[p].name);
+    ctx.menu.open(title);
+    menuMode_ = 3;
+    ctx.menu.add(MenuDuplicate, "Duplicate to next empty");
+    ctx.menu.add(MenuCopyTo, "Copy to pattern...");
+    ctx.menu.add(MenuClearPattern, "Clear pattern");
+    ctx.menu.add(MenuRename, "Name: next preset");
+    snprintf(buf, sizeof(buf), "Switch while playing: %s", switchModeName(s.switchMode()));
+    ctx.menu.add(MenuSwitchMode, buf);
 }
 
 void ChannelRackView::handleMenu(int id, UiContext& ctx)
@@ -100,6 +126,24 @@ void ChannelRackView::handleMenu(int id, UiContext& ctx)
         s.setSample(ch, id - MenuSampleBase);
         s.previewChannel(ch);
         ctx.toast("Channel %d sample: %s", ch + 1, s.project().channels[ch].name);
+        return;
+    }
+    if (id >= MenuCopyBase && id < MenuCopyBase + cfg::kMaxPatterns) {
+        const int src = s.project().currentPattern, dst = id - MenuCopyBase;
+        if (dst != src && !s.patternIsEmpty(dst) && !(confirmOverwrite_ && overwriteTarget_ == dst)) {
+            // Destructive: ask once; picking the same target again confirms.
+            confirmOverwrite_ = true;
+            overwriteTarget_ = dst;
+            ctx.menu.open("OVERWRITE PATTERN?");
+            menuMode_ = 4;
+            for (int i = 0; i < cfg::kMaxPatterns; ++i)
+                if (i == dst)
+                    ctx.menu.add(MenuCopyBase + i, "Yes, overwrite");
+            return;
+        }
+        confirmOverwrite_ = false;
+        s.copyPattern(src, dst);
+        ctx.toast("Pattern %d copied to %d", src + 1, dst + 1);
         return;
     }
     if (id >= MenuLengthBase && id < MenuLengthBase + 100) {
@@ -118,15 +162,22 @@ void ChannelRackView::handleMenu(int id, UiContext& ctx)
         ctx.menu.open("CHOOSE SAMPLE");
         menuMode_ = 1;
         const SampleBank& bank = ctx.bank;
-        for (int i = 0; i < bank.count() && i < ui::ContextMenu::kMaxItems; ++i) {
+        int added = 0;
+        for (int i = 0; i < bank.count() && added < ui::ContextMenu::kMaxItems; ++i) {
             const Sample* smp = bank.get(i);
             if (!smp)
                 continue;
             char buf[40];
-            snprintf(buf, sizeof(buf), "%-8s %4lu ms%s", smp->name, (unsigned long)(smp->frames * 1000u / smp->sampleRate),
-                     c.sampleSlot == i ? "  *" : "");
+            if (smp->hwOnly)
+                snprintf(buf, sizeof(buf), "%-10.10s  SPU2%s", smp->name, c.sampleSlot == i ? "  *" : "");
+            else
+                snprintf(buf, sizeof(buf), "%-10.10s %5lu ms%s", smp->name,
+                         (unsigned long)((uint64_t)smp->frames * 1000u / smp->sampleRate), c.sampleSlot == i ? "  *" : "");
             ctx.menu.add(MenuSampleBase + i, buf);
+            ++added;
         }
+        if (bank.liveCount() > added)
+            ctx.toast("More samples in BROWSER (menu shows %d)", added);
         break;
     }
     case MenuVoiceMode: {
@@ -151,6 +202,13 @@ void ChannelRackView::handleMenu(int id, UiContext& ctx)
         s.clearChannelSteps(ch);
         break;
     case MenuClearPattern:
+        if (s.patternIsEmpty(s.project().currentPattern))
+            break;
+        ctx.menu.open("CLEAR THIS PATTERN?");
+        menuMode_ = 4;
+        ctx.menu.add(MenuClearConfirm, "Yes, clear all notes");
+        break;
+    case MenuClearConfirm:
         s.clearPattern(s.project().currentPattern);
         ctx.toast("Pattern %d cleared", s.project().currentPattern + 1);
         break;
@@ -162,6 +220,48 @@ void ChannelRackView::handleMenu(int id, UiContext& ctx)
             snprintf(buf, sizeof(buf), "%2d steps%s", len, s.project().pattern().length == len ? "  *" : "");
             ctx.menu.add(MenuLengthBase + len, buf);
         }
+        break;
+    }
+    case MenuPatternMenu:
+        openPatternMenu(ctx);
+        break;
+    case MenuDuplicate: {
+        const int n = s.duplicatePattern(s.project().currentPattern);
+        if (n < 0)
+            ctx.toast("No empty pattern left to duplicate into");
+        else
+            ctx.toast("Duplicated into pattern %d", n + 1);
+        clampCursor(ctx);
+        break;
+    }
+    case MenuCopyTo: {
+        ctx.menu.open("COPY TO PATTERN");
+        menuMode_ = 4;
+        confirmOverwrite_ = false;
+        for (int i = 0; i < cfg::kMaxPatterns; ++i) {
+            char buf[40];
+            snprintf(buf, sizeof(buf), "%d  %.12s%s", i + 1, s.project().patterns[i].name,
+                     i == s.project().currentPattern ? "  (this)" : (s.patternIsEmpty(i) ? "" : "  *"));
+            ctx.menu.add(MenuCopyBase + i, buf, i != s.project().currentPattern);
+        }
+        break;
+    }
+    case MenuRename: {
+        const int p = s.project().currentPattern;
+        int next = 0;
+        for (int i = 0; i < (int)(sizeof(kPatternNames) / sizeof(kPatternNames[0])); ++i)
+            if (str::equalsNoCase(s.project().patterns[p].name, kPatternNames[i]))
+                next = (i + 1) % (int)(sizeof(kPatternNames) / sizeof(kPatternNames[0]));
+        s.setPatternName(p, kPatternNames[next]);
+        ctx.toast("Pattern %d: %s", p + 1, kPatternNames[next]);
+        break;
+    }
+    case MenuSwitchMode: {
+        const SwitchMode m = s.switchMode() == SwitchMode::Immediate ? SwitchMode::NextBeat
+                             : s.switchMode() == SwitchMode::NextBeat ? SwitchMode::NextBar
+                                                                      : SwitchMode::Immediate;
+        s.setSwitchMode(m);
+        ctx.toast("Pattern switch: %s", switchModeName(m));
         break;
     }
     case MenuStop:
