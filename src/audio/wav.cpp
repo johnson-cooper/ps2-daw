@@ -76,12 +76,17 @@ bool parse(const uint8_t* data, size_t size, Info& out, char* err, size_t errCap
 
     if (!haveFmt)
         return fail(err, errCap, "missing fmt chunk");
-    if (format != 1)
-        return fail(err, errCap, "compressed WAV not supported (PCM only)");
+    if (format != 1 && format != 3) {
+        static char msg[40];
+        snprintf(msg, sizeof(msg), "unsupported WAV encoding (tag %u)", (unsigned)format);
+        return fail(err, errCap, msg);
+    }
     if (channels != 1 && channels != 2)
         return fail(err, errCap, "only mono/stereo supported");
-    if (bits != 8 && bits != 16)
-        return fail(err, errCap, "only 8/16-bit supported");
+    if (format == 1 && bits != 8 && bits != 16 && bits != 24 && bits != 32)
+        return fail(err, errCap, "PCM must be 8/16/24/32-bit");
+    if (format == 3 && bits != 32 && bits != 64)
+        return fail(err, errCap, "float WAV must be 32/64-bit");
     if (rate < 4000 || rate > 96000)
         return fail(err, errCap, "sample rate out of range");
     const uint16_t expectAlign = (uint16_t)(channels * (bits / 8));
@@ -97,10 +102,23 @@ bool parse(const uint8_t* data, size_t size, Info& out, char* err, size_t errCap
     out.sampleRate = rate;
     out.channels = channels;
     out.bitsPerSample = bits;
+    out.isFloat = format == 3;
     out.frames = frames;
     out.pcm = pcm;
     out.pcmBytes = frames * expectAlign;
     return true;
+}
+
+static int16_t clip16(float v)
+{
+    if (!(v == v)) // NaN
+        return 0;
+    v *= 32768.0f;
+    if (v >= 32767.0f)
+        return 32767;
+    if (v <= -32768.0f)
+        return -32768;
+    return (int16_t)(v >= 0 ? v + 0.5f : v - 0.5f);
 }
 
 int16_t* toInt16(const Info& info)
@@ -109,13 +127,41 @@ int16_t* toInt16(const Info& info)
     int16_t* out = (int16_t*)malloc(count * sizeof(int16_t));
     if (!out)
         return nullptr;
-    if (info.bitsPerSample == 16) {
-        // Byte-wise: the data chunk may start at an odd address.
+    const uint8_t* p = info.pcm;
+    // Byte-wise reads throughout: the data chunk may start at an odd address.
+    if (info.isFloat && info.bitsPerSample == 32) {
+        for (size_t i = 0; i < count; ++i) {
+            const uint32_t u = rd32(p + i * 4);
+            float f;
+            memcpy(&f, &u, 4);
+            out[i] = clip16(f);
+        }
+    } else if (info.isFloat) { // 64-bit
+        for (size_t i = 0; i < count; ++i) {
+            const uint64_t u = (uint64_t)rd32(p + i * 8) | ((uint64_t)rd32(p + i * 8 + 4) << 32);
+            double d;
+            memcpy(&d, &u, 8);
+            out[i] = clip16((float)d);
+        }
+    } else if (info.bitsPerSample == 16) {
         for (size_t i = 0; i < count; ++i)
-            out[i] = (int16_t)rd16(info.pcm + i * 2);
-    } else {
+            out[i] = (int16_t)rd16(p + i * 2);
+    } else if (info.bitsPerSample == 24) {
+        for (size_t i = 0; i < count; ++i) {
+            // Top 16 bits, rounded (saturating at the positive end).
+            int32_t v = (int32_t)(((uint32_t)p[i * 3] << 8) | ((uint32_t)p[i * 3 + 1] << 16) | ((uint32_t)p[i * 3 + 2] << 24)) >> 8;
+            v = (v + 128) >> 8;
+            out[i] = (int16_t)(v > 32767 ? 32767 : v);
+        }
+    } else if (info.bitsPerSample == 32) {
+        for (size_t i = 0; i < count; ++i) {
+            int32_t v = (int32_t)rd32(p + i * 4);
+            v = (int32_t)(((int64_t)v + 32768) >> 16);
+            out[i] = (int16_t)(v > 32767 ? 32767 : v);
+        }
+    } else { // 8-bit unsigned
         for (size_t i = 0; i < count; ++i)
-            out[i] = (int16_t)(((int)info.pcm[i] - 128) << 8);
+            out[i] = (int16_t)(((int)p[i] - 128) << 8);
     }
     return out;
 }

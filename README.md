@@ -97,7 +97,7 @@ Full per-view bindings: [docs/CONTROLS.md](docs/CONTROLS.md).
 ## Samples and storage
 
 * Built in: nine sounds synthesised at boot (no files needed).
-* Import from USB: PCM WAV 8/16-bit, mono/stereo, 4-96 kHz, and `.adp`
+* Import from USB: PCM WAV (8/16/24/32-bit integer, 32/64-bit float), mono/stereo, 4-96 kHz, converted to 16-bit on load, and `.adp`
   (APCM, loaded straight into SPU2 RAM). Limits: 3 MiB per WAV file and per
   converted sample, 12 MiB of imported PCM in total, 32 sample slots, 1 MiB per
   `.adp`. Anything else is rejected with a visible reason.

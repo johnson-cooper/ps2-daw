@@ -359,10 +359,17 @@ void BrowserView::draw(Gfx& g, UiContext& ctx)
     const ChannelData& c = ctx.session.project().channels[ctx.selectedChannel];
     g.text(x + 8, kViewTop + 28, "LOADED", source_ == SrcLoaded ? theme::kAccent : theme::kTextDim, 1, 2);
     g.text(x + 62, kViewTop + 28, "USB", source_ == SrcUsb ? theme::kAccent : theme::kTextDim, 1, 2);
-    g.textf(x + 96, kViewTop + 28, theme::kTextDim, "-> CH%d %s", ctx.selectedChannel + 1, c.name);
-    if (source_ == SrcUsb)
-        g.textf(x + 280, kViewTop + 28, theme::kText, "%s/PS2DAW/SAMPLES%s%s", ctx.storage.ready() ? ctx.storage.rootName() : "----",
-                dirRel_[0] ? "/" : "", dirRel_);
+    g.textf(x + 96, kViewTop + 28, theme::kTextDim, "-> CH%d %.6s", ctx.selectedChannel + 1, c.name);
+    if (source_ == SrcUsb) {
+        char path[96];
+        snprintf(path, sizeof(path), "%s/SAMPLES%s%s", ctx.storage.ready() ? ctx.storage.rootName() : "----", dirRel_[0] ? "/" : "",
+                 dirRel_);
+        // Small font, right-aligned; long folder paths lose their left end.
+        const int maxChars = (w - 16 - 230) / 6;
+        const int len = (int)strlen(path);
+        const char* shown = len > maxChars ? path + (len - maxChars) : path;
+        g.text(x + w - 12 - Gfx::textWidth(shown, 1), kViewTop + 30, shown, theme::kText, 1, 2);
+    }
 
     const int n = itemCount(ctx);
     const int first = first_[source_], sel = sel_[source_];

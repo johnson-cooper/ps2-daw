@@ -11,6 +11,7 @@
 #include "audio/drum_synth.hpp"
 #include "audio/sample_import.hpp"
 #include "audio/sample_ref.hpp"
+#include "audio/wav.hpp"
 #include "project/project_io.hpp"
 #include "project/sample_library.hpp"
 #include "project/session.hpp"
@@ -606,6 +607,8 @@ static void testLibrarySpu2()
     CHECK(!t.lib.unload(0)); // built-ins stay
 }
 
+static void testWavEncodings();
+
 int runSampleTests()
 {
     printf("running sample tests\n");
@@ -618,5 +621,85 @@ int runSampleTests()
     testLibraryProjectRoundTrip();
     testLibraryMemoryPressure();
     testLibrarySpu2();
+    testWavEncodings();
     return g_fail;
+}
+
+// ---- extra WAV encodings (float, 24/32-bit) ------------------------------------------
+static std::vector<uint8_t> rawWav(uint16_t tag, uint16_t ch, uint32_t rate, uint16_t bits, const std::vector<uint8_t>& data)
+{
+    std::vector<uint8_t> v;
+    v.insert(v.end(), {'R', 'I', 'F', 'F'});
+    p32(v, 0);
+    v.insert(v.end(), {'W', 'A', 'V', 'E', 'f', 'm', 't', ' '});
+    p32(v, 16);
+    p16(v, tag);
+    p16(v, ch);
+    p32(v, rate);
+    p32(v, rate * ch * bits / 8);
+    p16(v, (uint16_t)(ch * bits / 8));
+    p16(v, bits);
+    v.insert(v.end(), {'d', 'a', 't', 'a'});
+    p32(v, (uint32_t)data.size());
+    v.insert(v.end(), data.begin(), data.end());
+    const uint32_t riff = (uint32_t)v.size() - 8;
+    v[4] = (uint8_t)riff; v[5] = (uint8_t)(riff >> 8); v[6] = (uint8_t)(riff >> 16); v[7] = (uint8_t)(riff >> 24);
+    return v;
+}
+
+static void testWavEncodings()
+{
+    char err[64];
+    wav::Info info;
+    auto conv = [&](const std::vector<uint8_t>& f, std::vector<int16_t>& out) {
+        if (!wav::parse(f.data(), f.size(), info, err, sizeof(err)))
+            return false;
+        int16_t* p = wav::toInt16(info);
+        out.assign(p, p + info.frames * info.channels);
+        free(p);
+        return true;
+    };
+    std::vector<int16_t> o;
+
+    // 32-bit float: full scale, half scale, silence, clipping, NaN.
+    const float fl[] = {1.0f, 0.5f, 0.0f, -1.0f, 2.5f, -3.0f, 0.0f / 0.0f, 0.25f};
+    std::vector<uint8_t> d;
+    for (float f : fl) { uint32_t u; memcpy(&u, &f, 4); p32(d, u); }
+    CHECK(conv(rawWav(3, 1, 44100, 32, d), o) && o.size() == 8 && info.isFloat);
+    CHECK(o[0] == 32767 && o[1] == 16384 && o[2] == 0 && o[3] == -32768);
+    CHECK(o[4] == 32767 && o[5] == -32768 && o[6] == 0 && o[7] == 8192);
+
+    // 64-bit float stereo.
+    d.clear();
+    const double dl[] = {0.5, -0.5, 1.0, 0.0};
+    for (double x : dl) { uint64_t u; memcpy(&u, &x, 8); p32(d, (uint32_t)u); p32(d, (uint32_t)(u >> 32)); }
+    CHECK(conv(rawWav(3, 2, 48000, 64, d), o) && info.frames == 2 && o[0] == 16384 && o[1] == -16384 && o[2] == 32767);
+
+    // 24-bit PCM: 0x7fffff saturates, 0x400000 -> 16384, negative values keep sign.
+    d.clear();
+    const int32_t s24[] = {0x7fffff, 0x400000, 0, -0x400000, -0x800000};
+    for (int32_t s : s24) { d.push_back((uint8_t)s); d.push_back((uint8_t)(s >> 8)); d.push_back((uint8_t)(s >> 16)); }
+    CHECK(conv(rawWav(1, 1, 44100, 24, d), o) && o.size() == 5);
+    CHECK(o[0] == 32767 && o[1] == 16384 && o[2] == 0 && o[3] == -16384 && o[4] == -32768);
+
+    // 32-bit PCM.
+    d.clear();
+    const int32_t s32[] = {0x7fffffff, 0x40000000, -0x40000000};
+    for (int32_t s : s32) p32(d, (uint32_t)s);
+    CHECK(conv(rawWav(1, 1, 44100, 32, d), o) && o[0] == 32767 && o[1] == 16384 && o[2] == -16384);
+
+    // Truly compressed / unsupported encodings are still refused, naming the tag.
+    CHECK(!conv(rawWav(2, 1, 22050, 4, std::vector<uint8_t>(64, 1)), o) && strstr(err, "tag 2") != nullptr);
+    CHECK(!conv(rawWav(0x55, 2, 44100, 16, std::vector<uint8_t>(64, 1)), o)); // MP3-in-WAV
+    CHECK(!conv(rawWav(3, 1, 44100, 16, std::vector<uint8_t>(64, 1)), o));    // 16-bit "float" is invalid
+    CHECK(!conv(rawWav(1, 1, 44100, 12, std::vector<uint8_t>(64, 1)), o));
+
+    // Whole import path accepts a float file and budgets by converted size.
+    SampleBank bank;
+    int slot = -1;
+    std::vector<uint8_t> big;
+    for (int i = 0; i < 100000; ++i) p32(big, 0x3f000000u); // 0.5f
+    auto f = rawWav(3, 1, 48000, 32, big);
+    CHECK(sampleimport::importWav(bank, "F.WAV", "samples:F.WAV", f.data(), f.size(), &slot, err, sizeof(err)) == sampleimport::Result::Ok);
+    CHECK(bank.get(slot)->pcmBytes == 200000 && bank.get(slot)->data[99999] == 16384);
 }

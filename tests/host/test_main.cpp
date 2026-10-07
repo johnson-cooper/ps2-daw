@@ -302,7 +302,7 @@ static void testWav()
     // Unsupported formats are rejected, not crashed on.
     auto d = makeWav(3, 48000, 16, 10, false);
     CHECK(!wav::parse(d.data(), d.size(), info, err, sizeof(err)));
-    auto e = makeWav(1, 48000, 24, 10, false);
+    auto e = makeWav(1, 48000, 20, 10, false); // 24-bit is supported now
     CHECK(!wav::parse(e.data(), e.size(), info, err, sizeof(err)));
 
     // Every truncation of a valid file, and random garbage, must not crash.

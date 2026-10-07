@@ -1,7 +1,9 @@
 // Defensive RIFF/WAVE parser for user-supplied files.
 //
-// Supported: PCM (format 1, or WAVE_FORMAT_EXTENSIBLE with PCM subformat),
-// 8-bit unsigned or 16-bit signed, mono or stereo, 4000..96000 Hz.
+// Supported: integer PCM (format 1) at 8-bit unsigned or 16/24/32-bit signed,
+// and IEEE float (format 3) at 32 or 64 bits, either directly or inside
+// WAVE_FORMAT_EXTENSIBLE; mono or stereo, 4000..96000 Hz. Everything is
+// converted to signed 16-bit by toInt16().
 // Anything else is rejected with a readable reason; malformed lengths are
 // never trusted beyond the bytes actually present.
 #pragma once
@@ -15,6 +17,7 @@ struct Info {
     uint32_t sampleRate;
     uint16_t channels;
     uint16_t bitsPerSample;
+    uint8_t isFloat;      // IEEE float samples
     uint32_t frames;
     const uint8_t* pcm;   // points into the caller's buffer
     uint32_t pcmBytes;
