@@ -206,6 +206,27 @@ trigger. `StepMark` carries the absolute `songStep` for the playhead and
 the song shrinks below the playhead the transport wraps on the next step.
 Leaving song mode re-selects the edited pattern.
 
+## Piano roll, pitch and note length
+
+Each pattern keeps, per channel, up to 32 `Note {step, pitch, velocity, length}`
+beside the step grid; `Session` mirrors a channel's list to the engine
+(`SetNote`/`SetNoteCount`) on every edit. At each step the engine plays the grid
+hit at the root pitch plus every note starting at that step.
+
+* **Pitch**: transposition resamples through the mixer's existing 16.16 playback
+  increment, scaled by `2^(semitones/12)` from a shared table
+  (`audio/pitch.cpp`, +-5 octaves, capped at 16 source frames per output frame),
+  so pitched notes cost the same as native ones. SPU2 voices use
+  `audio_channel_set_pitch()` with the same ratio.
+* **Length / instrument mode**: a "sustained" channel gives each note a gate in
+  output frames (`steps * 72,000,000 / bpmCenti`); `Mixer::mixSegment` splits the
+  segment at the gate and starts the declick release there. One-shot channels
+  ignore lengths and choke the previous voice like a drum pad; several notes
+  landing on one step never choke each other.
+* **Playlist extras**: `PlayFromBar` restarts the transport at an arbitrary
+  step (`Transport::startAtStep`), and a track mute/solo mask is applied when the
+  engine collects the clips covering a bar.
+
 ## Planned extension points
 
 * Mixer routing: `ChannelData::route` is already saved; inserts will be a

@@ -12,9 +12,15 @@
 
 class Sequencer {
 public:
+    struct Note {
+        uint8_t step, pitch, velocity, length;
+    };
+
     Sequencer()
     {
         memset(velocity_, 0, sizeof(velocity_));
+        memset(notes_, 0, sizeof(notes_));
+        memset(noteCount_, 0, sizeof(noteCount_));
         for (auto& l : length_)
             l = cfg::kDefaultSteps;
         current_ = 0;
@@ -38,9 +44,28 @@ public:
 
     void clearPattern(int pattern)
     {
-        if (pattern >= 0 && pattern < cfg::kMaxPatterns)
+        if (pattern >= 0 && pattern < cfg::kMaxPatterns) {
             memset(velocity_[pattern], 0, sizeof(velocity_[pattern]));
+            memset(noteCount_[pattern], 0, sizeof(noteCount_[pattern]));
+        }
     }
+
+    void setNote(int pattern, int channel, int index, const Note& n)
+    {
+        if (pattern >= 0 && pattern < cfg::kMaxPatterns && channel >= 0 && channel < cfg::kMaxChannels && index >= 0 &&
+            index < cfg::kMaxNotes)
+            notes_[pattern][channel][index] = n;
+    }
+    void setNoteCount(int pattern, int channel, int count)
+    {
+        if (pattern >= 0 && pattern < cfg::kMaxPatterns && channel >= 0 && channel < cfg::kMaxChannels)
+            noteCount_[pattern][channel] = (uint8_t)(count < 0 ? 0 : (count > cfg::kMaxNotes ? cfg::kMaxNotes : count));
+    }
+    int noteCount(int pattern, int channel) const
+    {
+        return (pattern >= 0 && pattern < cfg::kMaxPatterns && channel >= 0 && channel < cfg::kMaxChannels) ? noteCount_[pattern][channel] : 0;
+    }
+    const Note& note(int pattern, int channel, int index) const { return notes_[pattern][channel][index]; }
 
     void setLength(int pattern, int steps)
     {
@@ -72,6 +97,8 @@ private:
     }
 
     uint8_t velocity_[cfg::kMaxPatterns][cfg::kMaxChannels][cfg::kMaxSteps];
+    Note notes_[cfg::kMaxPatterns][cfg::kMaxChannels][cfg::kMaxNotes];
+    uint8_t noteCount_[cfg::kMaxPatterns][cfg::kMaxChannels];
     uint8_t length_[cfg::kMaxPatterns];
     uint8_t current_;
 };

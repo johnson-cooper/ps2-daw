@@ -44,7 +44,7 @@ public:
 private:
     struct Item {
         int id;
-        char label[40];
+        char label[44];
         bool enabled;
     };
     char title_[40] = "";

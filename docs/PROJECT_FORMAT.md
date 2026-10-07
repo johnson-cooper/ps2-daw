@@ -21,9 +21,10 @@ bytes (printable ASCII; anything else is replaced with `?` on load).
 | Tag | Payload |
 | --- | --- |
 | `PROJ` | str name, u32 tempo (BPM x 100), u8 master volume, u8 current pattern, u8 channel count |
-| `CHAN` (x8) | u8 index, str name, str sample reference, u8 volume, s8 pan, u8 flags (bit0 mute, bit1 solo), u8 voice mode (0 software, 1 SPU2), u8 route (0 = master) |
+| `CHAN` (x8) | u8 index, str name, str sample reference, u8 volume, s8 pan, u8 flags (bit0 mute, bit1 solo), u8 voice mode (0 software, 1 SPU2), u8 route (0 = master), optional u8 gate (1 = sustained instrument) |
 | `PATT` (x8) | u8 index, str name, u8 length (steps), u8 channels, u8 steps, then channels x steps velocity bytes (0 = off, 1-127) |
-| `PLST` | u16 clip count, then per clip: u8 track, u8 pattern, u16 start bar, u16 length bars; then an optional u8 song mode (1 = play the playlist; absent in older files = 0) |
+| `NOTE` (0..64) | u8 pattern, u8 channel, u8 count (max 32), then per note 4 bytes: u8 step, u8 pitch (MIDI 0-127, 60 = native speed), u8 velocity (1-127), u8 length (steps, 1-64). Optional chunk: files without it have no piano-roll notes |
+| `PLST` | u16 clip count, then per clip: u8 track, u8 pattern, u16 start bar, u16 length bars; then optional trailing bytes: u8 song mode (1 = play the playlist), u8 track mute bits, u8 track solo bits (older files end earlier and read as 0) |
 | `END ` | u32 CRC-32 (IEEE) of every byte before this chunk |
 
 Sample references (at most 63 characters):
@@ -52,3 +53,9 @@ Playlist validation on load: clips with a track >= 6, pattern >= 8, length 0 or
 start bar >= 128 are dropped, lengths are clamped so a clip ends by bar 128,
 a clip overlapping an earlier clip on the same track is dropped, and the
 survivors are sorted by (start bar, track). At most 64 clips.
+
+Notes are validated on load: a note with step >= 64, pitch > 127 or velocity 0
+is dropped, velocity and length are clamped, at most 32 notes are kept per
+pattern and channel, and a chunk whose declared count does not fit is rejected
+as corrupt. Unknown chunks are skipped, so files with notes still load in
+builds that predate the piano roll (the notes are ignored).

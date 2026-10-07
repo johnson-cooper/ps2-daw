@@ -23,6 +23,7 @@ App::App()
 {
     instance_ = this;
     views_[(int)ViewId::ChannelRack] = &rack_;
+    views_[(int)ViewId::PianoRoll] = &roll_;
     views_[(int)ViewId::Playlist] = &playlist_;
     views_[(int)ViewId::Mixer] = &mixer_;
     views_[(int)ViewId::Browser] = &browser_;
@@ -339,6 +340,11 @@ void App::frame()
     if (!menu_.isOpen())
         handleGlobalKeys(in);
     view.update(in, ctx_);
+    if (ctx_.requestedView != ViewId::Count) { // a view asked to go somewhere (e.g. rack -> piano roll)
+        current_ = (int)ctx_.requestedView;
+        ctx_.requestedView = ViewId::Count;
+        views_[current_]->onEnter(ctx_);
+    }
     View& shown = *views_[current_];
 
     gfx_.beginFrame(theme::kBackground);

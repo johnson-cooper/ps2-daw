@@ -21,12 +21,24 @@ struct ChannelData {
     uint8_t solo;
     uint8_t voiceMode;    // VoiceMode
     uint8_t route;        // mixer insert target; 0 = master (routing UI later)
+    uint8_t gate;         // 1 = piano-roll note length cuts the sample (sustained instruments)
+};
+
+// A piano-roll note. The step grid stays the quick way to place root-pitch hits;
+// notes add pitch, length and chords on top of it.
+struct PianoNote {
+    uint8_t step;         // 0..kMaxSteps-1
+    uint8_t pitch;        // MIDI note 0..127; 60 plays the sample at its native speed
+    uint8_t velocity;     // 1..127
+    uint8_t length;       // steps, 1..kMaxSteps
 };
 
 struct PatternData {
     char name[12];
     uint8_t length;       // steps, 1..cfg::kMaxSteps
     uint8_t velocity[cfg::kMaxChannels][cfg::kMaxSteps]; // 0 = step off
+    uint8_t noteCount[cfg::kMaxChannels];
+    PianoNote notes[cfg::kMaxChannels][cfg::kMaxNotes];
 };
 
 // Reserved for Milestone 4: a playlist clip references a pattern by index.
@@ -50,6 +62,8 @@ struct Project {
     uint16_t clipCount;
     PlaylistClip clips[kMaxClips];
     uint8_t songMode;         // 1 = play the playlist, 0 = loop the current pattern
+    uint8_t trackMute;        // playlist track bits
+    uint8_t trackSolo;
 
     // Resets to an empty project with the built-in kit on channels 0..7.
     void resetEmpty();

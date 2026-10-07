@@ -25,6 +25,8 @@ public:
     uint32_t bpmCenti() const { return bpmCenti_; }
 
     void play();  // from Stopped: restart at step 0; from Paused: resume
+    // (Re)starts playback so that the next step fired is `step` (e.g. a song bar).
+    void startAtStep(int step);
     void pause();
     void stop();  // rewind to the start
     State state() const { return state_; }

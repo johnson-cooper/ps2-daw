@@ -76,8 +76,150 @@ void Session::syncAll()
                     post(CmdType::SetStep, pi, ch, s, pd.velocity[ch][s]);
     }
     syncClips();
+    syncTrackMask();
+    for (int ch = 0; ch < cfg::kMaxChannels; ++ch)
+        post(CmdType::SetChannelGate, ch, 0, 0, p.channels[ch].gate);
+    for (int pi = 0; pi < cfg::kMaxPatterns; ++pi)
+        for (int ch = 0; ch < cfg::kMaxChannels; ++ch)
+            if (p.patterns[pi].noteCount[ch])
+                syncNotes(pi, ch);
     post(CmdType::SetSongMode, 0, 0, 0, p.songMode);
     post(CmdType::SelectPattern, p.currentPattern); // immediate: the whole song was just replaced
+}
+
+static int32_t packNote(const PianoNote& n)
+{
+    return (int32_t)((uint32_t)n.step | ((uint32_t)n.pitch << 8) | ((uint32_t)n.velocity << 16) | ((uint32_t)n.length << 24));
+}
+
+void Session::syncNotes(int pattern, int channel)
+{
+    const PatternData& pd = project_.patterns[pattern];
+    const int n = pd.noteCount[channel] > cfg::kMaxNotes ? cfg::kMaxNotes : pd.noteCount[channel];
+    for (int i = 0; i < n; ++i)
+        post(CmdType::SetNote, pattern, channel, i, packNote(pd.notes[channel][i]));
+    post(CmdType::SetNoteCount, pattern, channel, 0, n);
+}
+
+void Session::syncTrackMask()
+{
+    post(CmdType::SetTrackMask, 0, 0, 0, (int32_t)(project_.trackMute | ((uint32_t)project_.trackSolo << 8)));
+}
+
+int Session::noteIndexAt(int pattern, int channel, int step, int pitch) const
+{
+    if (!inRange(pattern, cfg::kMaxPatterns) || !inRange(channel, cfg::kMaxChannels))
+        return -1;
+    const PatternData& pd = project_.patterns[pattern];
+    for (int i = 0; i < pd.noteCount[channel]; ++i)
+        if (pd.notes[channel][i].step == step && pd.notes[channel][i].pitch == pitch)
+            return i;
+    return -1;
+}
+
+bool Session::addNote(int pattern, int channel, int step, int pitch, int length, int velocity)
+{
+    if (!inRange(pattern, cfg::kMaxPatterns) || !inRange(channel, cfg::kMaxChannels) || !inRange(step, cfg::kMaxSteps) ||
+        !inRange(pitch, 128))
+        return false;
+    length = length < 1 ? 1 : (length > cfg::kMaxSteps ? cfg::kMaxSteps : length);
+    velocity = velocity < 1 ? 1 : (velocity > 127 ? 127 : velocity);
+    PatternData& pd = project_.patterns[pattern];
+    int idx = noteIndexAt(pattern, channel, step, pitch);
+    if (idx < 0) {
+        if (pd.noteCount[channel] >= cfg::kMaxNotes)
+            return false;
+        idx = pd.noteCount[channel]++;
+    }
+    pd.notes[channel][idx].step = (uint8_t)step;
+    pd.notes[channel][idx].pitch = (uint8_t)pitch;
+    pd.notes[channel][idx].velocity = (uint8_t)velocity;
+    pd.notes[channel][idx].length = (uint8_t)length;
+    syncNotes(pattern, channel);
+    return true;
+}
+
+bool Session::removeNote(int pattern, int channel, int index)
+{
+    if (!inRange(pattern, cfg::kMaxPatterns) || !inRange(channel, cfg::kMaxChannels))
+        return false;
+    PatternData& pd = project_.patterns[pattern];
+    if (!inRange(index, pd.noteCount[channel]))
+        return false;
+    for (int i = index; i + 1 < pd.noteCount[channel]; ++i)
+        pd.notes[channel][i] = pd.notes[channel][i + 1];
+    --pd.noteCount[channel];
+    memset(&pd.notes[channel][pd.noteCount[channel]], 0, sizeof(PianoNote));
+    syncNotes(pattern, channel);
+    return true;
+}
+
+int Session::setNoteLength(int pattern, int channel, int index, int length)
+{
+    if (!inRange(pattern, cfg::kMaxPatterns) || !inRange(channel, cfg::kMaxChannels))
+        return 0;
+    PatternData& pd = project_.patterns[pattern];
+    if (!inRange(index, pd.noteCount[channel]))
+        return 0;
+    PianoNote& n = pd.notes[channel][index];
+    length = length < 1 ? 1 : (length > cfg::kMaxSteps ? cfg::kMaxSteps : length);
+    n.length = (uint8_t)length;
+    syncNotes(pattern, channel);
+    return length;
+}
+
+void Session::clearNotes(int pattern, int channel)
+{
+    if (!inRange(pattern, cfg::kMaxPatterns) || !inRange(channel, cfg::kMaxChannels))
+        return;
+    memset(project_.patterns[pattern].notes[channel], 0, sizeof(project_.patterns[pattern].notes[channel]));
+    project_.patterns[pattern].noteCount[channel] = 0;
+    syncNotes(pattern, channel);
+}
+
+bool Session::transposeNotes(int pattern, int channel, int semitones)
+{
+    if (!inRange(pattern, cfg::kMaxPatterns) || !inRange(channel, cfg::kMaxChannels))
+        return false;
+    PatternData& pd = project_.patterns[pattern];
+    for (int i = 0; i < pd.noteCount[channel]; ++i) {
+        const int np = pd.notes[channel][i].pitch + semitones;
+        if (np < 0 || np > 127)
+            return false;
+    }
+    for (int i = 0; i < pd.noteCount[channel]; ++i)
+        pd.notes[channel][i].pitch = (uint8_t)(pd.notes[channel][i].pitch + semitones);
+    syncNotes(pattern, channel);
+    return true;
+}
+
+void Session::setChannelGate(int channel, bool gate)
+{
+    if (!inRange(channel, cfg::kMaxChannels))
+        return;
+    project_.channels[channel].gate = gate ? 1 : 0;
+    post(CmdType::SetChannelGate, channel, 0, 0, gate ? 1 : 0);
+}
+
+void Session::setTrackMute(int track, bool mute)
+{
+    if (!inRange(track, cfg::kPlaylistTracks))
+        return;
+    project_.trackMute = (uint8_t)(mute ? (project_.trackMute | (1u << track)) : (project_.trackMute & ~(1u << track)));
+    syncTrackMask();
+}
+
+void Session::setTrackSolo(int track, bool solo)
+{
+    if (!inRange(track, cfg::kPlaylistTracks))
+        return;
+    project_.trackSolo = (uint8_t)(solo ? (project_.trackSolo | (1u << track)) : (project_.trackSolo & ~(1u << track)));
+    syncTrackMask();
+}
+
+void Session::playFromBar(int bar)
+{
+    post(CmdType::PlayFromBar, 0, 0, 0, bar < 0 ? 0 : bar);
 }
 
 void Session::syncClips()
@@ -229,6 +371,22 @@ void Session::toggleStep(int channel, int step)
     if (!inRange(channel, cfg::kMaxChannels) || !inRange(step, cfg::kMaxSteps))
         return;
     const bool on = project_.patterns[p].velocity[channel][step] != 0;
+    if (!on) {
+        // A cell that only shows piano-roll notes starting here: clicking it removes them.
+        PatternData& pd = project_.patterns[p];
+        bool removed = false;
+        for (int i = pd.noteCount[channel] - 1; i >= 0; --i)
+            if (pd.notes[channel][i].step == step) {
+                for (int k = i; k + 1 < pd.noteCount[channel]; ++k)
+                    pd.notes[channel][k] = pd.notes[channel][k + 1];
+                --pd.noteCount[channel];
+                removed = true;
+            }
+        if (removed) {
+            syncNotes(p, channel);
+            return;
+        }
+    }
     setStep(p, channel, step, on ? 0 : cfg::kDefaultVelocity);
 }
 
@@ -238,6 +396,7 @@ void Session::clearChannelSteps(int channel)
     for (int s = 0; s < cfg::kMaxSteps; ++s)
         if (project_.patterns[p].velocity[channel][s])
             setStep(p, channel, s, 0);
+    clearNotes(p, channel);
 }
 
 void Session::fillChannelEvery(int channel, int interval)
@@ -255,7 +414,8 @@ void Session::clearPattern(int pattern)
     if (!inRange(pattern, cfg::kMaxPatterns))
         return;
     memset(project_.patterns[pattern].velocity, 0, sizeof(project_.patterns[pattern].velocity));
-    post(CmdType::ClearPattern, pattern);
+    memset(project_.patterns[pattern].noteCount, 0, sizeof(project_.patterns[pattern].noteCount));
+    post(CmdType::ClearPattern, pattern); // the engine clears steps and notes together
 }
 
 void Session::setPatternLength(int pattern, int steps)
@@ -284,9 +444,13 @@ bool Session::patternIsEmpty(int pattern) const
         return false;
     const PatternData& pd = project_.patterns[pattern];
     for (int ch = 0; ch < cfg::kMaxChannels; ++ch)
+    {
+        if (pd.noteCount[ch])
+            return false;
         for (int s = 0; s < cfg::kMaxSteps; ++s)
             if (pd.velocity[ch][s])
                 return false;
+    }
     return true;
 }
 
@@ -300,12 +464,16 @@ bool Session::copyPattern(int src, int dst)
     const PatternData& from = project_.patterns[src];
     to.length = from.length;
     memcpy(to.velocity, from.velocity, sizeof(to.velocity));
+    memcpy(to.noteCount, from.noteCount, sizeof(to.noteCount));
+    memcpy(to.notes, from.notes, sizeof(to.notes));
     post(CmdType::ClearPattern, dst);
     post(CmdType::SetPatternLength, dst, 0, 0, to.length);
     for (int ch = 0; ch < cfg::kMaxChannels; ++ch)
         for (int s = 0; s < cfg::kMaxSteps; ++s)
             if (to.velocity[ch][s])
                 post(CmdType::SetStep, dst, ch, s, to.velocity[ch][s]);
+    for (int ch = 0; ch < cfg::kMaxChannels; ++ch)
+        syncNotes(dst, ch);
     return true;
 }
 
@@ -468,10 +636,10 @@ void Session::setMasterVolume(int volume)
     post(CmdType::SetMasterVolume, 0, 0, 0, volume);
 }
 
-void Session::previewChannel(int channel)
+void Session::previewChannel(int channel, int semis)
 {
     if (inRange(channel, cfg::kMaxChannels))
-        post(CmdType::PreviewChannel, channel);
+        post(CmdType::PreviewChannel, channel, 0, 0, semis);
 }
 
 void Session::previewSample(int slot, VoiceMode mode)

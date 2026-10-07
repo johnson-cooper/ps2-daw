@@ -29,6 +29,9 @@ constexpr int kMaxSamples = 32;
 
 // Playlist: tracks are rows, a bar is 16 steps. A clip plays one pattern
 // (looped if the clip is longer than the pattern) for lengthBars bars.
+// Piano roll: extra polyphonic notes per pattern and channel, on top of the step grid.
+constexpr int kMaxNotes = 32;
+
 constexpr int kPlaylistTracks = 6;
 constexpr int kMaxSongBars = 128;
 constexpr int kMaxClips = 64;

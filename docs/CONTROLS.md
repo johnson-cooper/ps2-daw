@@ -49,6 +49,30 @@ Indicators: LED flashes when the channel is heard (green = software, purple =
 SPU2); mute box green = playing, gold = solo, dark with red border = muted;
 purple bar on the name = SPU2 voice; pale bar under a step = playhead.
 
+## Piano roll (ROLL)
+
+Edits the selected rack channel in the current pattern. Rows are MIDI pitches
+(the row marked ROOT, C4, plays the sample at its native speed), columns are
+16th-note steps. Open it from the rack: Triangle > Piano roll, or SELECT to the
+ROLL tab. Notes can be chords and any length; the rack's step hits show on the
+ROOT row.
+
+| Button | Action |
+| --- | --- |
+| D-pad | move the cursor (step / pitch) |
+| Cross | place a note (current length and velocity, and you hear it); on a note: remove it; on a rack hit at ROOT: remove the hit |
+| Square | hear the pitch under the cursor |
+| L1 / R1 | on a note: shorten / lengthen it; on an empty cell: length of the next note |
+| L2 / R2 | previous / next pattern |
+| Circle | next channel |
+| Triangle | menu: instrument mode, new-note velocity, shift all notes by octave or semitone, clear notes |
+
+Instrument mode (also in the rack channel menu): **one-shot** samples always play
+to the end and a new hit on the channel fades the previous one (drums);
+**sustained** note lengths cut the sample and notes layer (basses, pads, leads).
+Rack cells that only contain piano-roll notes are shown dim; clicking one in the
+rack removes those notes.
+
 ## Song (Playlist)
 
 Rows are tracks (6), columns are bars (up to 128, 16 shown, the view scrolls).
@@ -64,7 +88,12 @@ never overlap (placing over one replaces it).
 | L2 / R2 | previous / next pattern (the brush; same selection as the rack) |
 | L1 / R1 | on a clip: shorten / lengthen it (stops at the next clip on the track); on an empty cell: brush length |
 | Circle | toggle SONG mode (plays the playlist) / PATTERN mode (loops the current pattern) |
-| Triangle | menu: mode, clear track, clear whole playlist (asks) |
+| Triangle | menu: mode, play song from the cursor bar, track mute / solo, duplicate clip, move clip, clear track, clear whole playlist (asks) |
+
+Move clip: the menu picks the clip up, the D-pad carries it, Cross drops it
+(replacing clips it lands on), Circle puts it back. Duplicate puts a copy right
+after the clip and refuses rather than overwrite another clip. Muted tracks show
+a red `M`, soloed tracks a yellow `S`.
 
 In SONG mode START plays from bar 1 and loops at the end of the last clip; the
 header shows `BAR b.beat` and a playhead runs across the grid (a red line marks

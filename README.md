@@ -13,7 +13,7 @@ can also be played directly on SPU2 hardware voices.
 
 ## Status
 
-Milestones 1-4 are implemented. Validation is tracked in three separate
+Milestones 1-4 and the piano roll are implemented. Validation is tracked in three separate
 columns, because they mean different things:
 
 * **Builds**: `ps2build build` (PS2Build v2026.10.02, GCC 15.3) produces the ELF.
@@ -37,7 +37,10 @@ columns, because they mean different things:
 | Queued pattern switching (beat / bar), copy, duplicate, names | yes | yes (switch observed) | not yet |
 | Safe project saves (`.TMP` + `.BAK`), load recovery, slot info | yes | **no** (needs USB) | not yet |
 | Playlist: 6 tracks x 128 bars, clips, song mode with looping playhead | yes | yes (clips placed, song played and looped) | not yet |
-| Effects / DSP, piano roll, WAV export | later | | |
+| Piano roll: pitched samples, chords, note length, sustained instruments (software voices) | yes | yes (notes placed from the rack menu and played) | not yet |
+| Pitched SPU2 voices (channel pitch) | yes | **no** | not yet |
+| Playlist: play from bar, track mute/solo, duplicate and move clips | yes | host tests only | not yet |
+| Effects / DSP, WAV export | later | | |
 
 The platform-independent code (timing, formats, sample lifecycle, library,
 pattern scheduling, slot store) also has host unit tests, which are not a
@@ -83,13 +86,13 @@ Hold **SELECT** during boot to skip the USB storage drivers (recovery option).
 | Cross | toggle step / mute / preview / edit value (depends on column) |
 | Square | mute selected channel |
 | Circle | preview selected channel (or leave value edit) |
-| Triangle | channel menu (sample, SPU2 voice, fills, length, solo) |
+| Triangle | channel menu (piano roll, sample, SPU2 voice, instrument mode, fills, length, solo, pattern tools) |
 | L1 / R1 | jump one beat (4 steps) |
 | L2 / R2 | previous / next pattern |
 | Right stick | selected channel volume (up/down) and pan (left/right) |
 | START | play / pause |
 | L3 | stop and rewind |
-| SELECT | next view (Rack, Song, Mixer, Browser, Project) |
+| SELECT | next view (Rack, Roll, Song, Mixer, Browser, Project) |
 | R3 | debug overlay |
 
 Full per-view bindings: [docs/CONTROLS.md](docs/CONTROLS.md).
@@ -127,7 +130,12 @@ for the test plan and what to report.
 * Untested on real hardware (first test pending).
 * Pattern switching while playing is immediate by default; "next beat" and
   "next bar" are chosen in the channel menu > Pattern tools.
-* One choke group per channel: retriggering a channel fades its previous note.
+* One-shot channels retrigger like a drum pad: a new hit fades the previous one
+  (chords on one step do not cut each other). Switch a channel to "sustained"
+  (Instrument mode) to layer notes and let note lengths cut the sample.
+* SPU2-voiced channels get pitch from the piano roll but not note lengths, and
+  one SPU2 voice per channel means the last note of a chord wins.
+* Piano-roll notes are 16th-step quantised, at most 32 per pattern and channel.
 * SPU2-voiced channels are scheduled to within a few milliseconds of the
   stream (the software mixer is sample-accurate); they also bypass the
   software meters, which say "HW" instead of showing a fake level.
@@ -158,7 +166,7 @@ for the test plan and what to report.
 * `src/audio`: platform-independent engine (host-testable).
 * `src/project`: song model, `.ps2daw` format, Session (edit API).
 * `src/platform`: PS2 specifics (IOP, GS, pad, audio backend, storage).
-* `src/ui`: widgets and views (Rack, Song/Playlist, Mixer, Browser, Project).
+* `src/ui`: widgets and views (Rack, Piano Roll, Song/Playlist, Mixer, Browser, Project).
 
 Details: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md),
 file format: [docs/PROJECT_FORMAT.md](docs/PROJECT_FORMAT.md).
@@ -171,7 +179,7 @@ file format: [docs/PROJECT_FORMAT.md](docs/PROJECT_FORMAT.md).
 4. **Playlist / arrangement** (done, awaiting hardware report)
 5. Mixer: routing, inserts, better meters
 6. Lightweight DSP (gain, filters, delay, distortion, compressor)
-7. Piano roll + pitched sample instruments
+7. **Piano roll + pitched sample instruments** (done, awaiting hardware report)
 8. Offline render to WAV on USB
 9. Optimisation, autosave/recovery, larger projects
 

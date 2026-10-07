@@ -16,7 +16,17 @@ public:
     void draw(Gfx& g, UiContext& ctx) override;
 
 private:
-    enum MenuId { MenuMode = 1, MenuClearTrack, MenuClearAll, MenuClearAllConfirm };
+    enum MenuId {
+        MenuMode = 1,
+        MenuPlayFromBar,
+        MenuMute,
+        MenuSolo,
+        MenuDuplicate,
+        MenuMove,
+        MenuClearTrack,
+        MenuClearAll,
+        MenuClearAllConfirm,
+    };
 
     void openMenu(UiContext& ctx);
     void handleMenu(int id, UiContext& ctx);
@@ -27,4 +37,6 @@ private:
     int scroll_ = 0;     // first visible bar
     int brushBars_ = 1;  // length used for newly placed clips
     bool brushInit_ = false;
+    bool moving_ = false;        // a clip is picked up and follows the cursor
+    PlaylistClip held_ = {};
 };

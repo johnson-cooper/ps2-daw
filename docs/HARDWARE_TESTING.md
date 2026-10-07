@@ -94,6 +94,27 @@ non-audio file and one WAV over 3 MiB there too. If you have a `.adp` file, add 
 5. Debug overlay (R3) during a long song with several clips: note underruns and
    render max.
 
+## Piano roll test plan
+
+1. Rack: pick a channel with a long sample (a loaded WAV, or the BASS), Triangle >
+   Piano roll. Cross places notes (each plays as you place it). Check that the
+   pitch rises going up and that ROOT sounds like the original sample.
+2. Place a chord (three pitches on one step), then START: all three sound.
+3. Triangle > Instrument: switch to SUSTAINED, give a note length 4 (L1/R1): the
+   sample stops after four steps; back to ONE-SHOT: it plays to the end.
+4. Play it with the debug overlay (R3): note `underruns` and `SW voices` with a
+   busy pattern (many notes, long samples). Report if voices run out (24 max).
+5. Set the channel to an SPU2 voice (rack menu > Voice): pitch should still follow
+   the notes (lengths are ignored on SPU2). Report whether pitched SPU2 notes
+   sound right; this is untested outside the emulator's code path.
+6. Save and reload: notes and instrument mode come back.
+
+## Song extras test plan
+
+1. SONG tab > Triangle > "Play song from bar N" starts at the cursor bar.
+2. Mute/solo a track from the same menu while the song plays.
+3. Duplicate a clip, and Move a clip (carry it, drop it, and cancel with Circle).
+
 ## What to report
 
 * Console model (e.g. SCPH-30001, 70012, 90001), region, how you launched it

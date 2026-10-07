@@ -165,6 +165,7 @@ size_t save(const Project& p, uint8_t* buf, size_t cap)
         w.u8((uint8_t)((cd.mute ? 1 : 0) | (cd.solo ? 2 : 0)));
         w.u8(cd.voiceMode);
         w.u8(cd.route);
+        w.u8(cd.gate ? 1 : 0); // trailing optional field
         w.end(c);
     }
 
@@ -179,6 +180,22 @@ size_t save(const Project& p, uint8_t* buf, size_t cap)
         for (int ch = 0; ch < cfg::kMaxChannels; ++ch)
             w.bytes(pd.velocity[ch], cfg::kMaxSteps);
         w.end(c);
+        for (int ch = 0; ch < cfg::kMaxChannels; ++ch) {
+            const int n = pd.noteCount[ch] > cfg::kMaxNotes ? cfg::kMaxNotes : pd.noteCount[ch];
+            if (n == 0)
+                continue;
+            c = w.begin("NOTE");
+            w.u8((uint8_t)pi);
+            w.u8((uint8_t)ch);
+            w.u8((uint8_t)n);
+            for (int i = 0; i < n; ++i) {
+                w.u8(pd.notes[ch][i].step);
+                w.u8(pd.notes[ch][i].pitch);
+                w.u8(pd.notes[ch][i].velocity);
+                w.u8(pd.notes[ch][i].length);
+            }
+            w.end(c);
+        }
     }
 
     c = w.begin("PLST");
@@ -190,7 +207,9 @@ size_t save(const Project& p, uint8_t* buf, size_t cap)
         w.u16(p.clips[i].startBar);
         w.u16(p.clips[i].lengthBars);
     }
-    w.u8(p.songMode ? 1 : 0); // trailing optional field: older files simply end after the clips
+    w.u8(p.songMode ? 1 : 0); // trailing optional fields: older files simply end after the clips
+    w.u8(p.trackMute);
+    w.u8(p.trackSolo);
     w.end(c);
 
     // Trailer: CRC32 of everything before the END chunk.
@@ -261,6 +280,7 @@ bool load(const uint8_t* data, size_t size, Project& out, char* err, size_t errC
                 cd.route = b.u8();
                 if (!b.ok())
                     return fail(err, errCap, "corrupt channel chunk");
+                cd.gate = b.remaining() >= 1 ? (b.u8() ? 1 : 0) : 0;
             }
         } else if (memcmp(tag, "PATT", 4) == 0) {
             const int pi = b.u8();
@@ -280,6 +300,34 @@ bool load(const uint8_t* data, size_t size, Project& out, char* err, size_t errC
                 if (!b.ok())
                     return fail(err, errCap, "corrupt pattern chunk");
             }
+        } else if (memcmp(tag, "NOTE", 4) == 0) {
+            const int pi = b.u8();
+            const int ch = b.u8();
+            const int count = b.u8();
+            if (pi < cfg::kMaxPatterns && ch < cfg::kMaxChannels) {
+                PatternData& pd = p.patterns[pi];
+                int kept = 0;
+                for (int i = 0; i < count; ++i) {
+                    PianoNote n;
+                    n.step = b.u8();
+                    n.pitch = b.u8();
+                    n.velocity = b.u8();
+                    n.length = b.u8();
+                    if (!b.ok())
+                        return fail(err, errCap, "corrupt note chunk");
+                    // Drop what cannot be played; clamp what can.
+                    if (n.step >= cfg::kMaxSteps || n.pitch > 127 || n.velocity == 0 || kept >= cfg::kMaxNotes)
+                        continue;
+                    if (n.velocity > 127)
+                        n.velocity = 127;
+                    if (n.length < 1)
+                        n.length = 1;
+                    if (n.length > cfg::kMaxSteps)
+                        n.length = cfg::kMaxSteps;
+                    pd.notes[ch][kept++] = n;
+                }
+                pd.noteCount[ch] = (uint8_t)kept;
+            }
         } else if (memcmp(tag, "PLST", 4) == 0) {
             uint16_t n = b.u16();
             if (n > Project::kMaxClips)
@@ -295,6 +343,10 @@ bool load(const uint8_t* data, size_t size, Project& out, char* err, size_t errC
                 return fail(err, errCap, "corrupt playlist chunk");
             p.clipCount = n;
             p.songMode = b.remaining() >= 1 ? (b.u8() ? 1 : 0) : 0;
+            if (b.remaining() >= 2) {
+                p.trackMute = b.u8() & ((1u << cfg::kPlaylistTracks) - 1);
+                p.trackSolo = b.u8() & ((1u << cfg::kPlaylistTracks) - 1);
+            }
             p.sanitizeClips();
         } else if (memcmp(tag, "END ", 4) == 0) {
             const uint32_t stored = b.u32();

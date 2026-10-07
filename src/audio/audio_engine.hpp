@@ -28,6 +28,7 @@ struct HwTrigger {
     uint8_t sample;     // sample bank slot
     uint8_t volume;     // 0..100 (already includes strip volume and velocity)
     int8_t pan;         // -100..100
+    int8_t semis;       // transpose from the sample's root, semitones
 };
 
 // One fired step, for the UI playhead. The UI shows the latest mark whose
@@ -97,8 +98,10 @@ private:
     void fireSongStep(int songStep, uint32_t frameInBlock);
     bool songActive() const { return songMode_ && clipCount_ > 0 && songSteps_ > 0; }
     void recomputeSong();
-    void triggerChannel(int ch, int velocity, uint32_t frameInBlock);
-    bool triggerSample(int ch, int sampleSlot, int velocity, VoiceMode mode, uint32_t frameInBlock);
+    void triggerChannel(int ch, int velocity, uint32_t frameInBlock, int semis = 0, int gateSteps = 0);
+    void fireNotes(int pattern, int localStep, uint32_t frameInBlock);
+    bool trackAudible(int track) const;
+    bool triggerSample(int ch, int sampleSlot, int velocity, VoiceMode mode, uint32_t frameInBlock, int semis = 0, int gateSteps = 0);
     void publish();
 
     SpscQueue<Command, 1024> queue_;
@@ -108,6 +111,9 @@ private:
     const SampleBank* bank_;
 
     int8_t channelSample_[cfg::kMaxChannels];
+    uint8_t channelGate_[cfg::kMaxChannels];
+    bool chokeDone_[cfg::kMaxChannels]; // a voice on this channel was already (re)triggered this step
+    uint8_t trackMute_, trackSolo_;
     VoiceMode channelMode_[cfg::kMaxChannels];
     uint8_t sampleHwReady_[cfg::kMaxSamples];
 

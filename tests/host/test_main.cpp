@@ -383,6 +383,7 @@ static void testQueue()
 int runSampleTests();
 int runWorkflowTests();
 int runPlaylistTests();
+int runPianoRollTests();
 
 int main()
 {
@@ -404,6 +405,7 @@ int main()
     g_failures += runSampleTests();
     g_failures += runWorkflowTests();
     g_failures += runPlaylistTests();
+    g_failures += runPianoRollTests();
     if (g_failures) {
         printf("FAILED: %d check(s)\n", g_failures);
         return 1;

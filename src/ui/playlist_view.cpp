@@ -40,7 +40,18 @@ void PlaylistView::scrollToCursor()
 void PlaylistView::openMenu(UiContext& ctx)
 {
     ctx.menu.open("PLAYLIST");
+    const Project& p = ctx.session.project();
+    char buf[44];
     ctx.menu.add(MenuMode, ctx.session.songMode() ? "Mode: SONG (plays playlist)" : "Mode: PATTERN (loops pattern)");
+    snprintf(buf, sizeof(buf), "Play song from bar %d", bar_ + 1);
+    ctx.menu.add(MenuPlayFromBar, buf, p.clipCount > 0);
+    snprintf(buf, sizeof(buf), "Track %d: %s", track_ + 1, (p.trackMute >> track_) & 1 ? "MUTED (unmute)" : "mute");
+    ctx.menu.add(MenuMute, buf);
+    snprintf(buf, sizeof(buf), "Track %d: %s", track_ + 1, (p.trackSolo >> track_) & 1 ? "SOLO (unsolo)" : "solo");
+    ctx.menu.add(MenuSolo, buf);
+    const bool onClip = p.clipAt(track_, bar_) >= 0;
+    ctx.menu.add(MenuDuplicate, "Duplicate clip right after itself", onClip);
+    ctx.menu.add(MenuMove, "Move clip (D-pad, Cross drops)", onClip);
     ctx.menu.add(MenuClearTrack, "Clear this track");
     ctx.menu.add(MenuClearAll, "Clear whole playlist...", ctx.session.project().clipCount > 0);
 }
@@ -54,6 +65,47 @@ void PlaylistView::handleMenu(int id, UiContext& ctx)
         ctx.toast(s.songMode() ? (s.project().clipCount ? "Song mode: playing the playlist" : "Song mode (playlist is empty)")
                                : "Pattern mode: looping the current pattern");
         break;
+    case MenuPlayFromBar:
+        s.setSongMode(true);
+        s.playFromBar(bar_);
+        ctx.toast("Song from bar %d", bar_ + 1);
+        break;
+    case MenuMute:
+        s.setTrackMute(track_, !((s.project().trackMute >> track_) & 1));
+        break;
+    case MenuSolo:
+        s.setTrackSolo(track_, !((s.project().trackSolo >> track_) & 1));
+        break;
+    case MenuDuplicate: {
+        const int idx = s.project().clipAt(track_, bar_);
+        if (idx < 0)
+            break;
+        const PlaylistClip k = s.project().clips[idx];
+        const int start = k.startBar + k.lengthBars;
+        bool room = start + k.lengthBars <= cfg::kMaxSongBars;
+        for (int b = start; room && b < start + k.lengthBars; ++b)
+            room = s.project().clipAt(k.track, b) < 0; // never overwrite another clip
+        if (room && s.placeClip(k.track, start, k.pattern, k.lengthBars)) {
+            bar_ = start;
+            scrollToCursor();
+            ctx.toast("Duplicated to bar %d", start + 1);
+        } else {
+            ctx.toast("No free room right after the clip");
+        }
+        break;
+    }
+    case MenuMove: {
+        const int idx = s.project().clipAt(track_, bar_);
+        if (idx < 0)
+            break;
+        held_ = s.project().clips[idx];
+        s.removeClip(idx);
+        moving_ = true;
+        bar_ = held_.startBar;
+        track_ = held_.track;
+        ctx.toast("Move the clip, " G_CROSS " drops it, " G_CIRCLE " cancels");
+        break;
+    }
     case MenuClearTrack:
         s.clearTrack(track_);
         ctx.toast("Track %d cleared", track_ + 1);
@@ -79,6 +131,28 @@ void PlaylistView::update(const InputState& in, UiContext& ctx)
     }
     Session& s = ctx.session;
     const Project& p = s.project();
+    if (moving_) {
+        // Carrying a clip: only movement, drop and cancel are active.
+        if (in.rep(btn::Left) && bar_ > 0)
+            --bar_;
+        if (in.rep(btn::Right) && bar_ < cfg::kMaxSongBars - 1)
+            ++bar_;
+        if (in.rep(btn::Up) && track_ > 0)
+            --track_;
+        if (in.rep(btn::Down) && track_ < cfg::kPlaylistTracks - 1)
+            ++track_;
+        scrollToCursor();
+        if (in.hit(btn::Cross)) {
+            s.placeClip(track_, bar_, held_.pattern, held_.lengthBars);
+            moving_ = false;
+        }
+        if (in.hit(btn::Circle)) {
+            s.placeClip(held_.track, held_.startBar, held_.pattern, held_.lengthBars);
+            moving_ = false;
+            ctx.toast("Move cancelled");
+        }
+        return;
+    }
     if (!brushInit_) {
         brushInit_ = true;
         brushBars_ = s.patternBars(p.currentPattern);
@@ -153,7 +227,10 @@ void PlaylistView::draw(Gfx& g, UiContext& ctx)
     // Rows and cells.
     for (int t = 0; t < cfg::kPlaylistTracks; ++t) {
         const int ry = kGridY + t * kRowH;
-        g.textf(x + 6, ry + 9, t == track_ ? theme::kText : theme::kTextDim, "T%d", t + 1);
+        const bool muted = (p.trackMute >> t) & 1, soloed = (p.trackSolo >> t) & 1;
+        g.textf(x + 6, ry + 2, muted ? theme::kMute : (t == track_ ? theme::kText : theme::kTextDim), "T%d", t + 1);
+        if (muted || soloed)
+            g.text(x + 8, ry + 18, muted ? "M" : "S", muted ? theme::kMute : theme::kSolo, 1, 2);
         for (int i = 0; i < kVisibleBars; ++i) {
             const int bar = scroll_ + i;
             g.fillRect(kGridX + i * kCellW + 1, ry + 1, kCellW - 2, kRowH - 2, (bar / 4) % 2 ? theme::kCellOffAlt : theme::kCellOff);
@@ -190,6 +267,13 @@ void PlaylistView::draw(Gfx& g, UiContext& ctx)
         if (px >= kGridX && px < kGridX + kVisibleBars * kCellW)
             g.fillRect(px, kGridY - 4, 2, cfg::kPlaylistTracks * kRowH + 4, theme::kPlayhead);
     }
+    // A carried clip: outline where it would land.
+    if (moving_) {
+        const int gw = held_.lengthBars * kCellW;
+        const int vis = (bar_ - scroll_) * kCellW;
+        g.frameRect(kGridX + vis, kGridY + track_ * kRowH, gw > kVisibleBars * kCellW - vis ? kVisibleBars * kCellW - vis : gw,
+                    kRowH, kPatternColors[held_.pattern % cfg::kMaxPatterns], 2);
+    }
     // Cursor.
     ui::selectOutline(g, kGridX + (bar_ - scroll_) * kCellW, kGridY + track_ * kRowH, kCellW, kRowH, theme::kSelect);
 
@@ -197,7 +281,10 @@ void PlaylistView::draw(Gfx& g, UiContext& ctx)
     const int iy = kGridY + cfg::kPlaylistTracks * kRowH + 8;
     const int idx = p.clipAt(track_, bar_);
     char line[96];
-    if (idx >= 0) {
+    if (moving_) {
+        snprintf(line, sizeof(line), "Moving P%d (%d bar%s) to T%d bar %d", held_.pattern + 1, held_.lengthBars,
+                 held_.lengthBars == 1 ? "" : "s", track_ + 1, bar_ + 1);
+    } else if (idx >= 0) {
         const PlaylistClip& k = p.clips[idx];
         snprintf(line, sizeof(line), "T%d bar %d: P%d %.12s, %d bar%s (bars %d-%d)  L1/R1 length", track_ + 1, bar_ + 1,
                  k.pattern + 1, p.patterns[k.pattern].name, k.lengthBars, k.lengthBars == 1 ? "" : "s", k.startBar + 1,

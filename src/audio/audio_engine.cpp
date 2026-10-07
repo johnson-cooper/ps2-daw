@@ -2,8 +2,13 @@
 
 #include <string.h>
 
+#include "audio/pitch.hpp"
+
 AudioEngine::AudioEngine() : bank_(nullptr), hwCount_(0), blockStart_(0), queuedPattern_(-1), queuedQuantum_(16), clipCount_(0), songSteps_(0), songMode_(false)
 {
+    memset(channelGate_, 0, sizeof(channelGate_));
+    memset(chokeDone_, 0, sizeof(chokeDone_));
+    trackMute_ = trackSolo_ = 0;
     for (int ch = 0; ch < cfg::kMaxChannels; ++ch) {
         channelSample_[ch] = -1;
         channelMode_[ch] = VoiceMode::Software;
@@ -108,8 +113,10 @@ void AudioEngine::apply(const Command& c)
         mixer_.setMasterVolume(c.value);
         break;
     case CmdType::PreviewChannel:
-        if (channelIndexOk(c.a))
-            triggerChannel(c.a, cfg::kDefaultVelocity, 0);
+        if (channelIndexOk(c.a)) {
+            memset(chokeDone_, 0, sizeof(chokeDone_));
+            triggerChannel(c.a, cfg::kDefaultVelocity, 0, c.value, 2);
+        }
         break;
     case CmdType::PreviewSample:
         triggerSample(-1, c.value, cfg::kDefaultVelocity, c.b == (int)VoiceMode::Spu2 ? VoiceMode::Spu2 : VoiceMode::Software, 0);
@@ -131,6 +138,40 @@ void AudioEngine::apply(const Command& c)
     case CmdType::SetClipCount:
         clipCount_ = c.value < 0 ? 0 : (c.value > cfg::kMaxClips ? cfg::kMaxClips : c.value);
         recomputeSong();
+        break;
+    case CmdType::SetNote: {
+        Sequencer::Note n;
+        const uint32_t v = (uint32_t)c.value;
+        n.step = (uint8_t)v;
+        n.pitch = (uint8_t)(v >> 8) & 0x7f;
+        n.velocity = (uint8_t)(v >> 16) & 0x7f;
+        n.length = (uint8_t)(v >> 24);
+        if (n.length == 0)
+            n.length = 1;
+        sequencer_.setNote(c.a, c.b, c.c, n);
+        break;
+    }
+    case CmdType::SetNoteCount:
+        sequencer_.setNoteCount(c.a, c.b, c.value);
+        break;
+    case CmdType::SetChannelGate:
+        if (channelIndexOk(c.a))
+            channelGate_[c.a] = c.value ? 1 : 0;
+        break;
+    case CmdType::SetTrackMask:
+        trackMute_ = (uint8_t)(c.value & 0xff);
+        trackSolo_ = (uint8_t)((c.value >> 8) & 0xff);
+        break;
+    case CmdType::PlayFromBar:
+        if (songActive()) {
+            int bar = c.value < 0 ? 0 : c.value;
+            if (bar * (cfg::kStepsPerBeat * cfg::kBeatsPerBar) >= songSteps_)
+                bar = 0;
+            mixer_.releaseAll();
+            transport_.startAtStep(bar * (cfg::kStepsPerBeat * cfg::kBeatsPerBar));
+        } else {
+            transport_.play();
+        }
         break;
     case CmdType::SetSongMode:
         songMode_ = c.value != 0;
@@ -203,6 +244,27 @@ void AudioEngine::render(int16_t* out, int frames)
     publish();
 }
 
+bool AudioEngine::trackAudible(int track) const
+{
+    if (trackSolo_)
+        return (trackSolo_ >> track) & 1;
+    return !((trackMute_ >> track) & 1);
+}
+
+void AudioEngine::fireNotes(int pattern, int localStep, uint32_t frameInBlock)
+{
+    for (int ch = 0; ch < cfg::kMaxChannels; ++ch) {
+        const int n = sequencer_.noteCount(pattern, ch);
+        if (n == 0 || !mixer_.audible(ch))
+            continue;
+        for (int i = 0; i < n; ++i) {
+            const Sequencer::Note& note = sequencer_.note(pattern, ch, i);
+            if (note.step == localStep && note.velocity > 0)
+                triggerChannel(ch, note.velocity, frameInBlock, (int)note.pitch - pitch::kRootNote, note.length);
+        }
+    }
+}
+
 void AudioEngine::fireStep(int step, uint32_t frameInBlock)
 {
     const int pattern = sequencer_.current();
@@ -215,11 +277,13 @@ void AudioEngine::fireStep(int step, uint32_t frameInBlock)
     m.pattern = (uint8_t)pattern;
     __atomic_store_n(&status_.markSerial, serial + 1, __ATOMIC_RELEASE);
 
+    memset(chokeDone_, 0, sizeof(chokeDone_));
     for (int ch = 0; ch < cfg::kMaxChannels; ++ch) {
         const int vel = sequencer_.velocity(pattern, ch, step);
         if (vel > 0 && mixer_.audible(ch))
             triggerChannel(ch, vel, frameInBlock);
     }
+    fireNotes(pattern, step, frameInBlock);
 }
 
 void AudioEngine::fireSongStep(int songStep, uint32_t frameInBlock)
@@ -228,9 +292,11 @@ void AudioEngine::fireSongStep(int songStep, uint32_t frameInBlock)
     uint8_t vel[cfg::kMaxChannels];
     memset(vel, 0, sizeof(vel));
     int firstPattern = -1, firstStep = 0;
+    int active[cfg::kMaxClips], activeLocal[cfg::kMaxClips];
+    int activeCount = 0;
     for (int i = 0; i < clipCount_; ++i) {
         const Clip& k = clips_[i];
-        if (bar < k.startBar || bar >= k.startBar + k.lengthBars)
+        if (bar < k.startBar || bar >= k.startBar + k.lengthBars || !trackAudible(k.track))
             continue;
         // The pattern restarts at the clip start and loops while the clip lasts.
         const int local = (songStep - k.startBar * (cfg::kStepsPerBeat * cfg::kBeatsPerBar)) % sequencer_.length(k.pattern);
@@ -238,6 +304,8 @@ void AudioEngine::fireSongStep(int songStep, uint32_t frameInBlock)
             firstPattern = i;
             firstStep = local;
         }
+        active[activeCount] = i;
+        activeLocal[activeCount++] = local;
         for (int ch = 0; ch < cfg::kMaxChannels; ++ch) {
             const int v = sequencer_.velocity(k.pattern, ch, local);
             if (v > vel[ch])
@@ -255,20 +323,23 @@ void AudioEngine::fireSongStep(int songStep, uint32_t frameInBlock)
     m.pattern = (uint8_t)sequencer_.current();
     __atomic_store_n(&status_.markSerial, serial + 1, __ATOMIC_RELEASE);
 
+    memset(chokeDone_, 0, sizeof(chokeDone_));
     for (int ch = 0; ch < cfg::kMaxChannels; ++ch)
         if (vel[ch] > 0 && mixer_.audible(ch))
             triggerChannel(ch, vel[ch], frameInBlock);
+    for (int i = 0; i < activeCount; ++i)
+        fireNotes(clips_[active[i]].pattern, activeLocal[i], frameInBlock);
 }
 
-void AudioEngine::triggerChannel(int ch, int velocity, uint32_t frameInBlock)
+void AudioEngine::triggerChannel(int ch, int velocity, uint32_t frameInBlock, int semis, int gateSteps)
 {
-    if (triggerSample(ch, channelSample_[ch], velocity, channelMode_[ch], frameInBlock)) {
+    if (triggerSample(ch, channelSample_[ch], velocity, channelMode_[ch], frameInBlock, semis, gateSteps)) {
         status_.lastTriggerFrame[ch] = blockStart_ + frameInBlock;
         status_.triggerCount[ch] = status_.triggerCount[ch] + 1;
     }
 }
 
-bool AudioEngine::triggerSample(int ch, int slot, int velocity, VoiceMode mode, uint32_t frameInBlock)
+bool AudioEngine::triggerSample(int ch, int slot, int velocity, VoiceMode mode, uint32_t frameInBlock, int semis, int gateSteps)
 {
     if (!bank_ || slot < 0 || slot >= cfg::kMaxSamples)
         return false;
@@ -293,6 +364,7 @@ bool AudioEngine::triggerSample(int ch, int slot, int velocity, VoiceMode mode, 
         t.sample = (uint8_t)slot;
         t.volume = (uint8_t)((q15 * 100 + 16383) / 32767);
         t.pan = (int8_t)pan;
+        t.semis = (int8_t)(semis < -pitch::kMaxSemis ? -pitch::kMaxSemis : (semis > pitch::kMaxSemis ? pitch::kMaxSemis : semis));
         status_.hwTriggers = status_.hwTriggers + 1;
         return true;
     }
@@ -300,7 +372,22 @@ bool AudioEngine::triggerSample(int ch, int slot, int velocity, VoiceMode mode, 
     // Software voices start exactly at their segment boundary: render() mixes
     // in segments split at every step, so the voice's first frame lands on
     // frameInBlock with sample accuracy.
-    return mixer_.trigger(ch, s, velocity);
+    const bool gated = ch >= 0 && channelGate_[ch];
+    uint32_t gateFrames = 0;
+    if (gated && gateSteps > 0) {
+        // frames per step = 48000 * 60 / (4 * bpm) = 72,000,000 / bpmCenti
+        const uint32_t bpm = transport_.bpmCenti() ? transport_.bpmCenti() : 1;
+        gateFrames = (uint32_t)((uint64_t)gateSteps * 72000000ull / bpm);
+    }
+    // Sustained (gated) channels layer notes; one-shot channels retrigger like a drum pad
+    // (but several notes landing on one step, a chord, do not cut each other).
+    bool choke = !gated;
+    if (ch >= 0) {
+        if (chokeDone_[ch])
+            choke = false;
+        chokeDone_[ch] = true;
+    }
+    return mixer_.trigger(ch, s, velocity, semis, gateFrames, choke);
 }
 
 void AudioEngine::publish()

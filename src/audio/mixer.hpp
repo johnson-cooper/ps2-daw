@@ -36,7 +36,11 @@ public:
     // Starts a voice for `channel` (or -1 for a channel-less preview).
     // Any voice already playing on the same channel is faded out quickly
     // (a declicked choke). Returns false if `sample` is not ready.
-    bool trigger(int channel, const Sample* sample, int velocity);
+    // `semis` transposes by resampling (0 = native speed). A nonzero
+    // `gateFrames` fades the voice out after that many output frames (note
+    // length). With `choke` false, voices already sounding on the channel
+    // keep playing (chords, sustained notes).
+    bool trigger(int channel, const Sample* sample, int velocity, int semis = 0, uint32_t gateFrames = 0, bool choke = true);
 
     // Fades every voice out over a few milliseconds.
     void releaseAll();
@@ -74,6 +78,7 @@ private:
         int32_t velGain;    // Q15
         int32_t releaseGain;// Q15, decremented per frame while releasing
         int32_t releaseStep;
+        uint32_t gateLeft;  // frames until the note ends (0 = plays to the end)
         uint32_t serial;    // age, for stealing
         int8_t channel;
         uint8_t active;

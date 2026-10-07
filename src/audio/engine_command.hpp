@@ -25,12 +25,17 @@ enum class CmdType : uint8_t {
     SetChannelSolo,      // a = channel, value = 0/1
     SetChannelVoiceMode, // a = channel, value = VoiceMode
     SetMasterVolume,     // value = 0..100
-    PreviewChannel,      // a = channel
+    PreviewChannel,      // a = channel, value = semitones from the root note
     PreviewSample,       // value = sample slot, b = VoiceMode
     SetSampleHwReady,    // value = sample slot, a = 0/1
     SetClip,             // a = index, b = track, c = pattern, value = startBar | (lengthBars << 16)
     SetClipCount,        // value = number of valid clips
     SetSongMode,         // value = 0 pattern loop, 1 play the playlist
+    SetNote,             // a = pattern, b = channel, c = index, value = step | pitch << 8 | velocity << 16 | length << 24
+    SetNoteCount,        // a = pattern, b = channel, value = number of valid notes
+    SetChannelGate,      // a = channel, value = 0 one-shot, 1 note length cuts the sample
+    SetTrackMask,        // value = playlist track mute bits | solo bits << 8
+    PlayFromBar,         // value = bar: start (or restart) the song from that bar
     ReleaseSample,       // value = sample slot: stop its voices, then acknowledge
     AllVoicesOff,
 };

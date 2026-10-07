@@ -72,6 +72,25 @@ public:
     // Pattern length in bars (ceil(steps / 16)), the natural clip length.
     int patternBars(int pattern) const;
 
+    // Piano roll: polyphonic notes with pitch and length, per pattern and
+    // channel, in addition to the step grid. A note at an existing (step, pitch)
+    // is replaced. Pitch 60 is the sample's native speed. All return false and
+    // change nothing for bad arguments or when a channel holds kMaxNotes notes.
+    bool addNote(int pattern, int channel, int step, int pitch, int length, int velocity);
+    bool removeNote(int pattern, int channel, int index);
+    int noteIndexAt(int pattern, int channel, int step, int pitch) const;
+    int setNoteLength(int pattern, int channel, int index, int length);
+    void clearNotes(int pattern, int channel);
+    // Shifts every note of the channel; refuses (false, nothing changed) if one would leave 0..127.
+    bool transposeNotes(int pattern, int channel, int semitones);
+    // Sustained instrument mode: note lengths cut the sample and notes layer.
+    void setChannelGate(int channel, bool gate);
+    // Playlist tracks
+    void setTrackMute(int track, bool mute);
+    void setTrackSolo(int track, bool solo);
+    // Starts the song at `bar` (song mode) or plays normally otherwise.
+    void playFromBar(int bar);
+
     // Channel strip
     void setVolume(int channel, int volume);
     void setPan(int channel, int pan);
@@ -93,7 +112,7 @@ public:
     void setMasterVolume(int volume);
 
     // Auditioning
-    void previewChannel(int channel);
+    void previewChannel(int channel, int semis = 0);
     void previewSample(int slot, VoiceMode mode);
 
     // Platform -> engine: which samples have SPU2 copies.
@@ -105,6 +124,8 @@ private:
     bool post(CmdType t, int a = 0, int b = 0, int c = 0, int32_t value = 0);
     void syncAll();
     void syncClips();
+    void syncNotes(int pattern, int channel);
+    void syncTrackMask();
     int resolveSample(const ChannelData& c) const;
 
     AudioEngine& engine_;

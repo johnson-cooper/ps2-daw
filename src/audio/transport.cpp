@@ -27,6 +27,17 @@ void Transport::play()
     state_ = State::Playing;
 }
 
+void Transport::startAtStep(int step)
+{
+    if (step < 0)
+        step = 0;
+    nextStepTick_ = (uint32_t)step * (uint32_t)cfg::kTicksPerStep;
+    acc_ = (uint64_t)nextStepTick_ * kDenominator;
+    songFrames_ = 0;
+    loops_ = 0;
+    state_ = State::Playing;
+}
+
 void Transport::pause()
 {
     if (state_ == State::Playing)

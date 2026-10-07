@@ -2,6 +2,8 @@
 
 #include <string.h>
 
+#include "audio/pitch.hpp"
+
 namespace {
 
 constexpr int32_t kUnity = 32767;
@@ -91,13 +93,13 @@ Mixer::Voice* Mixer::allocVoice()
     return oldest;
 }
 
-bool Mixer::trigger(int channel, const Sample* sample, int velocity)
+bool Mixer::trigger(int channel, const Sample* sample, int velocity, int semis, uint32_t gateFrames, bool choke)
 {
     if (!sample || !sample->data || sample->frames == 0)
         return false;
 
     // Choke: fade any voice already sounding on this channel.
-    if (channel >= 0) {
+    if (channel >= 0 && choke) {
         for (auto& v : voices_) {
             if (v.active && v.channel == channel && !v.releasing) {
                 v.releasing = 1;
@@ -118,12 +120,20 @@ bool Mixer::trigger(int channel, const Sample* sample, int velocity)
     v->frac = 0;
     // 16.16 rate step = sampleRate / outputRate (pitch control arrives with
     // the piano roll; built-ins are 48 kHz so this is exactly 1.0 today).
-    const uint32_t step = (uint32_t)(((uint64_t)sample->sampleRate << 16) / (uint32_t)cfg::kSampleRate);
+    uint64_t step64 = ((uint64_t)sample->sampleRate << 16) / (uint32_t)cfg::kSampleRate;
+    if (semis != 0)
+        step64 = (step64 * pitch::ratioQ16(semis)) >> 16;
+    if (step64 > (16ull << 16))
+        step64 = 16ull << 16; // never skip more than 16 source frames per output frame
+    if (step64 == 0)
+        step64 = 1;
+    const uint32_t step = (uint32_t)step64;
     v->incInt = step >> 16;
     v->incFrac = step & 0xffff;
     v->velGain = velocity * kUnity / 127;
     v->releaseGain = kUnity;
     v->releaseStep = 0;
+    v->gateLeft = gateFrames;
     v->serial = ++serial_;
     v->channel = (int8_t)channel;
     v->releasing = 0;
@@ -174,9 +184,29 @@ void Mixer::mixSegment(int offset, int frames)
 {
     if (frames <= 0)
         return;
-    for (auto& v : voices_)
-        if (v.active)
-            mixVoice(v, offset, frames);
+    for (auto& v : voices_) {
+        if (!v.active)
+            continue;
+        if (v.gateLeft && !v.releasing) {
+            if (v.gateLeft > (uint32_t)frames) {
+                v.gateLeft -= (uint32_t)frames;
+            } else {
+                // The note ends inside this segment: mix up to it, then fade out.
+                const int first = (int)v.gateLeft;
+                v.gateLeft = 0;
+                mixVoice(v, offset, first);
+                if (v.active) {
+                    v.releasing = 1;
+                    v.releaseGain = kUnity;
+                    v.releaseStep = kUnity / kReleaseFrames;
+                    if (frames - first > 0)
+                        mixVoice(v, offset + first, frames - first);
+                }
+                continue;
+            }
+        }
+        mixVoice(v, offset, frames);
+    }
 }
 
 void Mixer::mixVoice(Voice& v, int offset, int frames)

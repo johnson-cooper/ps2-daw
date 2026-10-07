@@ -35,6 +35,8 @@ private:
         MenuRename,
         MenuSwitchMode,
         MenuClearConfirm,
+        MenuPianoRoll,
+        MenuGate,
         MenuSampleBase = 100,
         MenuLengthBase = 200,
         MenuCopyBase = 300,

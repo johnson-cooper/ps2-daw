@@ -545,22 +545,35 @@ static void testPlaylistProject()
     uint32_t plen = buf[plst + 4] | (buf[plst + 5] << 8) | (buf[plst + 6] << 16) | ((uint32_t)buf[plst + 7] << 24);
     const size_t endChunk = plst + 8 + plen; // the "END " chunk starts here
     CHECK(memcmp(buf + endChunk, "END ", 4) == 0);
-    // Drop the last payload byte, then fix the chunk length and the checksum.
-    memmove(buf + endChunk - 1, buf + endChunk, n - endChunk);
-    n -= 1;
-    plen -= 1;
-    buf[plst + 4] = (uint8_t)plen;
-    buf[plst + 5] = (uint8_t)(plen >> 8);
-    buf[plst + 6] = (uint8_t)(plen >> 16);
-    buf[plst + 7] = (uint8_t)(plen >> 24);
-    const size_t newEnd = endChunk - 1;
-    const uint32_t crc = projectio::crc32(buf, newEnd);
-    buf[newEnd + 8] = (uint8_t)crc;
-    buf[newEnd + 9] = (uint8_t)(crc >> 8);
-    buf[newEnd + 10] = (uint8_t)(crc >> 16);
-    buf[newEnd + 11] = (uint8_t)(crc >> 24);
-    CHECK(projectio::load(buf, n, b, err, sizeof(err)));
-    CHECK(b.clipCount == 1 && b.songMode == 0);
+    // Rewrites the file with the last `drop` payload bytes of PLST removed (older layouts),
+    // fixing the chunk length and the checksum.
+    auto older = [&](size_t drop, Project& out) {
+        static uint8_t copy[projectio::kMaxFileBytes];
+        memcpy(copy, buf, n);
+        size_t len = n;
+        memmove(copy + endChunk - drop, copy + endChunk, len - endChunk);
+        len -= drop;
+        const uint32_t pl = plen - (uint32_t)drop;
+        copy[plst + 4] = (uint8_t)pl;
+        copy[plst + 5] = (uint8_t)(pl >> 8);
+        copy[plst + 6] = (uint8_t)(pl >> 16);
+        copy[plst + 7] = (uint8_t)(pl >> 24);
+        const size_t newEnd = endChunk - drop;
+        const uint32_t crc = projectio::crc32(copy, newEnd);
+        copy[newEnd + 8] = (uint8_t)crc;
+        copy[newEnd + 9] = (uint8_t)(crc >> 8);
+        copy[newEnd + 10] = (uint8_t)(crc >> 16);
+        copy[newEnd + 11] = (uint8_t)(crc >> 24);
+        return projectio::load(copy, len, out, err, sizeof(err));
+    };
+    a.trackMute = 0x05;
+    a.trackSolo = 0x02;
+    n = projectio::save(a, buf, sizeof(buf));
+    CHECK(projectio::load(buf, n, b, err, sizeof(err)) && b.trackMute == 0x05 && b.trackSolo == 0x02 && b.songMode == 1);
+    // Layout 1: before song mode existed (no trailing bytes at all).
+    CHECK(older(3, b) && b.clipCount == 1 && b.songMode == 0 && b.trackMute == 0 && b.trackSolo == 0);
+    // Layout 2: song mode but no track masks.
+    CHECK(older(2, b) && b.clipCount == 1 && b.songMode == 1 && b.trackMute == 0 && b.trackSolo == 0);
 
     // The playlist reaches the engine on project load.
     H h;
@@ -587,5 +600,357 @@ int runPlaylistTests()
     testSongPlayback();
     testClipEditing();
     testPlaylistProject();
+    return g_fail;
+}
+
+// ---- piano roll, pitch, gate, playlist extras ---------------------------------------
+#include "audio/pitch.hpp"
+
+// A rig with one DC sample (always 20000) of `frames` frames on channel 0, 120 BPM.
+struct DcRig {
+    H h;
+    int slot;
+    std::vector<int16_t> left;
+    explicit DcRig(uint32_t frames)
+    {
+        int16_t* dc = (int16_t*)malloc(frames * sizeof(int16_t));
+        for (uint32_t i = 0; i < frames; ++i)
+            dc[i] = 20000;
+        slot = h.bank.add("DC", dc, frames, cfg::kSampleRate, 1, true, "builtin:DC");
+        h.session.setSample(0, slot);
+        h.session.setVolume(0, 100);
+        h.session.setMasterVolume(100);
+    }
+    // Renders `frames` frames and records the left channel.
+    void run(uint32_t frames)
+    {
+        int16_t buf[cfg::kMaxBlockFrames * 2];
+        uint32_t done = 0;
+        while (done < frames) {
+            const int n = (int)(frames - done < 256 ? frames - done : 256);
+            h.engine.render(buf, n);
+            for (int i = 0; i < n; ++i)
+                left.push_back(buf[i * 2]);
+            done += (uint32_t)n;
+        }
+    }
+    // Number of leading non-silent frames.
+    size_t audibleRun() const
+    {
+        size_t n = 0;
+        while (n < left.size() && left[n] != 0)
+            ++n;
+        return n;
+    }
+};
+
+static void testPitchAndGate()
+{
+    CHECK(pitch::ratioQ16(0) == 65536 && pitch::ratioQ16(12) == 131072 && pitch::ratioQ16(-12) == 32768);
+    CHECK(pitch::ratioQ16(1000) == pitch::ratioQ16(pitch::kMaxSemis) && pitch::ratioQ16(-1000) == pitch::ratioQ16(-pitch::kMaxSemis));
+    CHECK(pitch::ratioQ16(7) > 98000 && pitch::ratioQ16(7) < 98400); // a fifth: 1.4983
+
+    // Transposition changes playback speed, so the sample's length scales by 2^(-semis/12).
+    const struct { int pitch; int expectFrames; } cases[] = {{60, 4800}, {72, 2400}, {48, 9600}, {67, 3204}, {84, 1200}};
+    for (const auto& k : cases) {
+        DcRig r(4800);
+        r.h.session.addNote(0, 0, 0, k.pitch, 1, 127);
+        r.h.session.play();
+        r.run(12000);
+        const size_t run = r.audibleRun();
+        CHECK(run + 4 >= (size_t)k.expectFrames && run <= (size_t)k.expectFrames + 4);
+    }
+
+    // One-shot channel: the note length does not cut the sample.
+    {
+        DcRig r(48000);
+        r.h.session.addNote(0, 0, 0, 60, 1, 127); // 1 step = 6000 frames
+        r.h.session.play();
+        r.run(20000);
+        CHECK(r.audibleRun() >= 19000);
+    }
+    // Sustained channel: the length cuts the sample (plus a short declick fade).
+    {
+        DcRig r(48000);
+        r.h.session.setChannelGate(0, true);
+        r.h.session.addNote(0, 0, 0, 60, 1, 127);
+        r.h.session.play();
+        r.run(20000);
+        const size_t run = r.audibleRun();
+        CHECK(run >= 5990 && run <= 6000 + 300);
+        // Longer notes last proportionally longer; tempo scales the length.
+        DcRig r2(96000);
+        r2.h.session.setChannelGate(0, true);
+        r2.h.session.setBpmCenti(24000);
+        r2.h.session.addNote(0, 0, 0, 60, 4, 127);
+        r2.h.session.play();
+        r2.run(20000);
+        const size_t run2 = r2.audibleRun();
+        CHECK(run2 >= 11990 && run2 <= 12000 + 300); // 4 steps at 240 BPM = 4 x 3000
+        // The grid hit on a sustained channel still plays the whole sample.
+        DcRig r3(8000);
+        r3.h.session.setChannelGate(0, true);
+        r3.h.session.setStep(0, 0, 0, 100);
+        r3.h.session.play();
+        r3.run(12000);
+        CHECK(r3.audibleRun() >= 7990);
+    }
+}
+
+static void testChordsAndChoke()
+{
+    // A chord on a one-shot channel: all notes sound together (no self-choke)...
+    {
+        DcRig r(30000);
+        r.h.session.addNote(0, 0, 0, 60, 1, 100);
+        r.h.session.addNote(0, 0, 0, 64, 1, 100);
+        r.h.session.addNote(0, 0, 0, 67, 1, 100);
+        r.h.session.play();
+        r.run(512);
+        CHECK(r.h.engine.status().voicesActive == 3);
+        CHECK(r.h.engine.status().triggerCount[0] == 3);
+        // ...and the next step retriggers like a drum pad: the old voices fade out.
+        r.h.session.addNote(0, 0, 1, 60, 1, 100);
+        r.run(48000 / 8 * 2 + 4000);
+        CHECK(r.h.engine.status().voicesActive <= 2);
+    }
+    // A sustained channel layers notes across steps instead.
+    {
+        DcRig r(60000);
+        r.h.session.setChannelGate(0, true);
+        r.h.session.addNote(0, 0, 0, 60, 8, 100);
+        r.h.session.addNote(0, 0, 1, 64, 8, 100);
+        r.h.session.addNote(0, 0, 2, 67, 8, 100);
+        r.h.session.play();
+        r.run(6000 * 2 + 600);
+        CHECK(r.h.engine.status().voicesActive == 3);
+    }
+    // Grid hit and a note on the same step both play.
+    {
+        DcRig r(30000);
+        r.h.session.setStep(0, 0, 0, 100);
+        r.h.session.addNote(0, 0, 0, 72, 1, 100);
+        r.h.session.play();
+        r.run(512);
+        CHECK(r.h.engine.status().triggerCount[0] == 2);
+    }
+    // Muted channels stay silent for notes too.
+    {
+        DcRig r(30000);
+        r.h.session.addNote(0, 0, 0, 60, 1, 100);
+        r.h.session.setMute(0, true);
+        r.h.session.play();
+        r.run(2000);
+        CHECK(r.h.engine.status().triggerCount[0] == 0);
+    }
+    // Preview with pitch.
+    {
+        DcRig r(4800);
+        r.h.session.previewChannel(0, 12);
+        r.run(8000);
+        const size_t run = r.audibleRun();
+        CHECK(run + 4 >= 2400 && run <= 2404);
+    }
+}
+
+static void testNoteEditing()
+{
+    H h;
+    Session& s = h.session;
+    const Project& p = s.project();
+    CHECK(!s.addNote(-1, 0, 0, 60, 1, 100) && !s.addNote(0, 8, 0, 60, 1, 100) && !s.addNote(0, 0, 64, 60, 1, 100) &&
+          !s.addNote(0, 0, 0, 128, 1, 100) && !s.addNote(0, 0, 0, -1, 1, 100));
+    CHECK(p.patterns[0].noteCount[0] == 0);
+
+    CHECK(s.addNote(0, 0, 4, 60, 2, 100));
+    CHECK(s.addNote(0, 0, 4, 64, 2, 90)); // chord: a different pitch at the same step
+    CHECK(p.patterns[0].noteCount[0] == 2);
+    CHECK(s.addNote(0, 0, 4, 60, 5, 50)); // same step+pitch: replaced, not duplicated
+    CHECK(p.patterns[0].noteCount[0] == 2 && p.patterns[0].notes[0][s.noteIndexAt(0, 0, 4, 60)].length == 5);
+    CHECK(s.addNote(0, 0, 0, 60, 500, 500)); // clamped
+    CHECK(p.patterns[0].notes[0][s.noteIndexAt(0, 0, 0, 60)].length == cfg::kMaxSteps);
+    CHECK(p.patterns[0].notes[0][s.noteIndexAt(0, 0, 0, 60)].velocity == 127);
+    CHECK(s.addNote(0, 0, 2, 60, 0, 0) && p.patterns[0].notes[0][s.noteIndexAt(0, 0, 2, 60)].length == 1 &&
+          p.patterns[0].notes[0][s.noteIndexAt(0, 0, 2, 60)].velocity == 1);
+
+    CHECK(s.setNoteLength(0, 0, s.noteIndexAt(0, 0, 4, 64), 3) == 3 && s.setNoteLength(0, 0, 99, 3) == 0);
+    CHECK(!s.removeNote(0, 0, -1) && !s.removeNote(0, 0, 50));
+    const int before = p.patterns[0].noteCount[0];
+    CHECK(s.removeNote(0, 0, s.noteIndexAt(0, 0, 4, 64)) && p.patterns[0].noteCount[0] == before - 1);
+    CHECK(s.noteIndexAt(0, 0, 4, 64) < 0 && s.noteIndexAt(0, 0, 4, 60) >= 0);
+
+    // The channel holds at most kMaxNotes; other channels are independent.
+    s.clearNotes(0, 0);
+    for (int i = 0; i < cfg::kMaxNotes; ++i)
+        CHECK(s.addNote(0, 0, i, 40 + i, 1, 100));
+    CHECK(!s.addNote(0, 0, 40, 100, 1, 100) && p.patterns[0].noteCount[0] == cfg::kMaxNotes);
+    CHECK(s.addNote(0, 0, 3, 40 + 3, 4, 100)); // replacing at the limit is fine
+    CHECK(s.addNote(0, 1, 0, 60, 1, 100));
+
+    // Transpose is all-or-nothing.
+    CHECK(s.transposeNotes(0, 0, 12) && p.patterns[0].notes[0][0].pitch == 52);
+    CHECK(!s.transposeNotes(0, 0, 100) && p.patterns[0].notes[0][0].pitch == 52);
+    CHECK(s.transposeNotes(0, 0, -12) && p.patterns[0].notes[0][0].pitch == 40);
+    CHECK(!s.transposeNotes(0, 0, -41)); // would go below 0
+
+    // Notes count as content for copy/duplicate/empty checks.
+    s.clearNotes(0, 0);
+    CHECK(!s.patternIsEmpty(0)); // channel 1 still has one
+    s.clearPattern(0);
+    CHECK(s.patternIsEmpty(0));
+    s.addNote(2, 5, 7, 70, 3, 80);
+    CHECK(!s.patternIsEmpty(2));
+    CHECK(s.copyPattern(2, 4) && p.patterns[4].noteCount[5] == 1 && p.patterns[4].notes[5][0].pitch == 70);
+    const int d = s.duplicatePattern(2);
+    CHECK(d >= 0 && p.patterns[d].noteCount[5] == 1);
+
+    // Rack interaction: a cell showing only notes is removed by toggling it; the channel clear removes notes too.
+    s.selectPattern(6);
+    s.addNote(6, 2, 5, 60, 2, 100);
+    s.toggleStep(2, 5);
+    CHECK(p.patterns[6].noteCount[2] == 0 && p.patterns[6].velocity[2][5] == 0);
+    s.addNote(6, 2, 5, 60, 2, 100);
+    s.setStep(6, 2, 9, 100);
+    s.clearChannelSteps(2);
+    CHECK(p.patterns[6].noteCount[2] == 0 && p.patterns[6].velocity[2][9] == 0);
+}
+
+static void testNotesPersistence()
+{
+    static uint8_t buf[projectio::kMaxFileBytes];
+    H h;
+    Session& s = h.session;
+    s.addNote(0, 3, 0, 60, 2, 100);
+    s.addNote(0, 3, 0, 67, 2, 80);
+    s.addNote(5, 7, 15, 36, 16, 127);
+    s.setChannelGate(3, true);
+    s.setTrackMute(1, true);
+    const size_t n = projectio::save(s.project(), buf, sizeof(buf));
+    Project q;
+    char err[64];
+    CHECK(n && projectio::load(buf, n, q, err, sizeof(err)));
+    CHECK(q.patterns[0].noteCount[3] == 2 && q.patterns[0].notes[3][1].pitch == 67 && q.patterns[0].notes[3][1].velocity == 80);
+    CHECK(q.patterns[5].noteCount[7] == 1 && q.patterns[5].notes[7][0].length == 16 && q.channels[3].gate == 1 && q.channels[2].gate == 0);
+    CHECK(q.trackMute == 2);
+
+    // Loading reaches the engine: a fresh session plays the loaded notes.
+    DcRig r(4800);
+    Project loaded = q;
+    for (auto& c : loaded.channels)
+        c.sampleSlot = (int8_t)r.slot;
+    loaded.patterns[0].noteCount[3] = 0; // keep only what we assert on
+    loaded.patterns[0].noteCount[0] = 1;
+    loaded.patterns[0].notes[0][0] = {0, 72, 127, 1};
+    loaded.channels[0].volume = 100;
+    loaded.masterVolume = 100;
+    r.h.session.loadProject(loaded);
+    r.h.session.play();
+    r.run(6000);
+    CHECK(r.audibleRun() + 4 >= 2400 && r.audibleRun() <= 2404);
+
+    // Damaged / hostile note data is filtered, never trusted.
+    Project bad;
+    bad.resetEmpty();
+    PatternData& pd = bad.patterns[1];
+    pd.noteCount[0] = 8;
+    pd.notes[0][0] = {99, 60, 100, 1};   // step beyond the pattern grid
+    pd.notes[0][1] = {0, 200, 100, 1};   // pitch beyond MIDI
+    pd.notes[0][2] = {0, 60, 0, 1};      // silent
+    pd.notes[0][3] = {0, 60, 100, 0};    // zero length: becomes 1
+    pd.notes[0][4] = {1, 61, 200, 250};  // velocity and length clamped
+    pd.notes[0][5] = {2, 62, 100, 4};    // fine
+    pd.notes[0][6] = {3, 63, 100, 4};    // fine
+    pd.notes[0][7] = {64, 60, 100, 4};   // step == kMaxSteps: rejected
+    pd.noteCount[1] = 200;               // count beyond the table: never reads past it
+    const size_t m = projectio::save(bad, buf, sizeof(buf));
+    CHECK(m && projectio::load(buf, m, q, err, sizeof(err)));
+    CHECK(q.patterns[1].noteCount[0] == 4);
+    CHECK(q.patterns[1].notes[0][0].length == 1 && q.patterns[1].notes[0][0].pitch == 60);
+    CHECK(q.patterns[1].notes[0][1].velocity == 127 && q.patterns[1].notes[0][1].length == cfg::kMaxSteps);
+    CHECK(q.patterns[1].noteCount[1] <= cfg::kMaxNotes);
+    // A truncated NOTE chunk is rejected as corrupt rather than half-applied.
+    size_t note = 0;
+    for (size_t i = 12; i + 4 < m; ++i)
+        if (memcmp(buf + i, "NOTE", 4) == 0) {
+            note = i;
+            break;
+        }
+    CHECK(note > 0);
+    buf[note + 8 + 2] = 40; // claims 40 notes in a chunk that holds fewer
+    const uint32_t crc = projectio::crc32(buf, m - 12);
+    buf[m - 4] = (uint8_t)crc;
+    buf[m - 3] = (uint8_t)(crc >> 8);
+    buf[m - 2] = (uint8_t)(crc >> 16);
+    buf[m - 1] = (uint8_t)(crc >> 24);
+    CHECK(!projectio::load(buf, m, q, err, sizeof(err)));
+}
+
+static void testPlaylistExtras()
+{
+    // Play from a bar: the first step fired is that bar's first step.
+    {
+        H h;
+        h.session.setStep(0, 0, 0, 100);
+        h.session.placeClip(0, 0, 0, 4);
+        h.session.setSongMode(true);
+        h.session.playFromBar(2);
+        h.steps(3);
+        CHECK(h.marks[0].songStep == 32 && h.marks[1].songStep == 33);
+        CHECK(h.engine.status().triggerCount[0] == 1); // bar 3 step 0 sounded
+        h.session.playFromBar(0); // restart while playing
+        h.steps(2);
+        CHECK(h.marks[3].songStep == 0);
+        h.session.playFromBar(99); // past the end: starts from the top
+        h.steps(2);
+        CHECK(h.marks[5].songStep == 0);
+        // Without song mode it is a plain play.
+        H g;
+        g.session.setSongMode(false);
+        g.session.playFromBar(3);
+        g.steps(2);
+        CHECK(g.marks[0].songStep == 0);
+    }
+    // Track mute and solo.
+    {
+        H h;
+        h.session.setStep(0, 0, 0, 100); // pattern 1: channel 0
+        h.session.setStep(1, 1, 0, 100); // pattern 2: channel 1
+        h.session.placeClip(0, 0, 0, 1);
+        h.session.placeClip(1, 0, 1, 1);
+        h.session.setSongMode(true);
+        h.session.setTrackMute(1, true);
+        h.session.play();
+        h.steps(16);
+        CHECK(h.engine.status().triggerCount[0] == 1 && h.engine.status().triggerCount[1] == 0);
+        h.session.setTrackMute(1, false);
+        h.session.setTrackSolo(1, true); // solo wins over the other track
+        h.steps(16);
+        CHECK(h.engine.status().triggerCount[0] == 1 && h.engine.status().triggerCount[1] == 1);
+        h.session.setTrackSolo(1, false);
+        h.steps(16);
+        CHECK(h.engine.status().triggerCount[0] == 2 && h.engine.status().triggerCount[1] == 2);
+        h.session.setTrackMute(99, true); // ignored
+        CHECK(h.session.project().trackMute == 0);
+    }
+    // Notes inside song clips play with pitch, per clip pattern.
+    {
+        DcRig r(4800);
+        r.h.session.addNote(0, 0, 0, 72, 1, 127);
+        r.h.session.placeClip(0, 0, 0, 1);
+        r.h.session.setSongMode(true);
+        r.h.session.play();
+        r.run(6000);
+        CHECK(r.audibleRun() + 4 >= 2400 && r.audibleRun() <= 2404);
+    }
+}
+
+int runPianoRollTests()
+{
+    printf("running piano roll tests\n");
+    testPitchAndGate();
+    testChordsAndChoke();
+    testNoteEditing();
+    testNotesPersistence();
+    testPlaylistExtras();
     return g_fail;
 }

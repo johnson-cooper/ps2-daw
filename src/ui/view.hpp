@@ -15,7 +15,7 @@
 #include "project/session.hpp"
 #include "ui/widgets.hpp"
 
-enum class ViewId : uint8_t { ChannelRack, Playlist, Mixer, Browser, Project, Count };
+enum class ViewId : uint8_t { ChannelRack, PianoRoll, Playlist, Mixer, Browser, Project, Count };
 
 // Everything a view may use. Views change the song only through `session`.
 struct UiContext {

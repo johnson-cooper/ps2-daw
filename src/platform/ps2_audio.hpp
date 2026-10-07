@@ -83,6 +83,7 @@ private:
         uint32_t frame;
         uint8_t channel, sample, volume;
         int8_t pan;
+        int8_t semis;
     };
     static constexpr int kPending = 64;
 
@@ -107,6 +108,7 @@ private:
     uint32_t spuSlotBytes_[cfg::kMaxSamples] = {};
     int8_t spuVolume_[24] = {};
     int8_t spuPan_[24] = {};
+    int8_t spuPitch_[24] = {};   // semitones last set on each SPU2 channel
 
     Pending pending_[kPending];
     int pendingCount_ = 0;

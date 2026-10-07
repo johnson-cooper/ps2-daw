@@ -10,6 +10,7 @@
 #include "libsd_irx.h"
 
 #include "audio/adpcm.hpp"
+#include "audio/pitch.hpp"
 #include "platform/ps2_system.hpp"
 #include "project/session.hpp"
 
@@ -296,6 +297,7 @@ void Ps2Audio::collectHwTriggers()
         p.sample = t.sample;
         p.volume = t.volume;
         p.pan = t.pan;
+        p.semis = t.semis;
     }
 }
 
@@ -318,6 +320,10 @@ void Ps2Audio::dispatchHw(uint32_t heard)
             audio_channel_set_volume_and_pan(spuCh, p.volume, p.pan);
             spuVolume_[spuCh] = (int8_t)p.volume;
             spuPan_[spuCh] = p.pan;
+        }
+        if (spuPitch_[spuCh] != p.semis) {
+            audio_channel_set_pitch(spuCh, (float)pitch::ratioQ16(p.semis) / 65536.0f);
+            spuPitch_[spuCh] = p.semis;
         }
         const int32_t handle = __atomic_load_n(&spuHandle_[p.sample], __ATOMIC_ACQUIRE);
         if (handle != AUDIO_SOUND_INVALID) {

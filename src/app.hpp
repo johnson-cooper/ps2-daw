@@ -18,6 +18,7 @@
 #include "ui/browser.hpp"
 #include "ui/channel_rack.hpp"
 #include "ui/mixer_view.hpp"
+#include "ui/piano_roll.hpp"
 #include "ui/playlist_view.hpp"
 #include "ui/project_view.hpp"
 #include "ui/view.hpp"
@@ -55,6 +56,7 @@ private:
     UiContext ctx_;
 
     ChannelRackView rack_;
+    PianoRollView roll_;
     PlaylistView playlist_;
     MixerView mixer_;
     BrowserView browser_;

@@ -10,6 +10,17 @@
 
 namespace {
 
+// Rack cell content: the step grid, or a dim cell where only piano-roll notes start.
+int shownVelocity(const PatternData& pat, int ch, int step)
+{
+    if (pat.velocity[ch][step])
+        return pat.velocity[ch][step];
+    for (int i = 0; i < pat.noteCount[ch] && i < cfg::kMaxNotes; ++i)
+        if (pat.notes[ch][i].step == step)
+            return 40;
+    return 0;
+}
+
 // Layout (logical 640x448 canvas).
 constexpr int kPanelX = theme::kSafeLeft;
 constexpr int kPanelW = theme::kSafeRight - theme::kSafeLeft;
@@ -78,10 +89,12 @@ void ChannelRackView::openChannelMenu(UiContext& ctx)
     menuMode_ = 0;
     char buf[40];
     ctx.menu.add(MenuPreview, "Preview sound");
+    ctx.menu.add(MenuPianoRoll, "Piano roll...");
     ctx.menu.add(MenuSample, "Choose sample...");
     const bool spu = c.voiceMode == (uint8_t)VoiceMode::Spu2;
     snprintf(buf, sizeof(buf), "Voice: %s", spu ? "SPU2 hardware" : "Software mix");
     ctx.menu.add(MenuVoiceMode, buf, ctx.audio.stats().spuSounds > 0 || spu);
+    ctx.menu.add(MenuGate, c.gate ? "Instrument: SUSTAINED" : "Instrument: one-shot");
     ctx.menu.add(MenuSolo, c.solo ? "Solo: ON" : "Solo: off");
     ctx.menu.add(MenuFill4, "Fill every 4 steps");
     ctx.menu.add(MenuFill2, "Fill every 2 steps");
@@ -222,6 +235,13 @@ void ChannelRackView::handleMenu(int id, UiContext& ctx)
         }
         break;
     }
+    case MenuPianoRoll:
+        ctx.requestedView = ViewId::PianoRoll;
+        break;
+    case MenuGate:
+        s.setChannelGate(ch, !c.gate);
+        ctx.toast(s.project().channels[ch].gate ? "Sustained: piano-roll note length cuts the sample" : "One-shot: samples play to the end");
+        break;
     case MenuPatternMenu:
         openPatternMenu(ctx);
         break;
@@ -428,7 +448,7 @@ void ChannelRackView::draw(Gfx& g, UiContext& ctx)
                 break;
             const bool playhead = heard == step && playingPattern == p.currentPattern;
             const bool sel = rowSel && col_ == ColFirstStep + i;
-            ui::stepCell(g, stepX(i), y, kCellW, kCellH, pat.velocity[ch][step], ((step / 4) & 1) != 0, playhead, sel);
+            ui::stepCell(g, stepX(i), y, kCellW, kCellH, shownVelocity(pat, ch, step), ((step / 4) & 1) != 0, playhead, sel);
         }
     }
 

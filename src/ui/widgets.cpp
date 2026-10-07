@@ -164,6 +164,9 @@ void ContextMenu::add(int id, const char* label, bool enabled)
 {
     if (count_ >= kMaxItems)
         return;
+    // Start on the first usable entry rather than a greyed-out one.
+    if (enabled && count_ > 0 && !items_[sel_].enabled && sel_ == 0 && !items_[0].enabled)
+        sel_ = count_;
     Item& it = items_[count_++];
     it.id = id;
     str::copy(it.label, sizeof(it.label), label);
@@ -194,7 +197,7 @@ void ContextMenu::draw(Gfx& g) const
     if (!open_)
         return;
     const int rowH = 22;
-    const int w = 360;
+    const int w = 460;
     const int h = 30 + count_ * rowH + 26;
     const int x = (Gfx::kWidth - w) / 2;
     const int y = (Gfx::kHeight - h) / 2;
