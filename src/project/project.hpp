@@ -38,7 +38,7 @@ struct PlaylistClip {
 };
 
 struct Project {
-    static constexpr int kMaxClips = 64;
+    static constexpr int kMaxClips = cfg::kMaxClips;
 
     char name[24];
     uint32_t bpmCenti;
@@ -49,12 +49,22 @@ struct Project {
     PatternData patterns[cfg::kMaxPatterns];
     uint16_t clipCount;
     PlaylistClip clips[kMaxClips];
+    uint8_t songMode;         // 1 = play the playlist, 0 = loop the current pattern
 
     // Resets to an empty project with the built-in kit on channels 0..7.
     void resetEmpty();
     // Empty project plus a short demo beat in pattern 1 so that pressing
     // START on first boot is immediately audible.
     void resetDemo();
+
+    // Drops invalid clips (bad track/pattern/length), clamps lengths to the
+    // song limit, removes clips that overlap an earlier clip on the same
+    // track, and orders the rest by start bar. Run after loading untrusted data.
+    void sanitizeClips();
+    // Index of the clip covering (track, bar), or -1.
+    int clipAt(int track, int bar) const;
+    // Bars until the last clip ends (0 for an empty playlist).
+    int songBars() const;
 
     PatternData& pattern() { return patterns[currentPattern]; }
     const PatternData& pattern() const { return patterns[currentPattern]; }

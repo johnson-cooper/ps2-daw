@@ -23,6 +23,7 @@ App::App()
 {
     instance_ = this;
     views_[(int)ViewId::ChannelRack] = &rack_;
+    views_[(int)ViewId::Playlist] = &playlist_;
     views_[(int)ViewId::Mixer] = &mixer_;
     views_[(int)ViewId::Browser] = &browser_;
     views_[(int)ViewId::Project] = &projectView_;
@@ -201,8 +202,12 @@ void App::drawHeader()
     gfx_.textf(250, y + 4, theme::kText, "%3lu.%02lu BPM", (unsigned long)(bpm / 100), (unsigned long)(bpm % 100));
 
     const int step = ctx_.heardStep();
+    const int songStep = ctx_.heardSongStep();
     char pos[32];
-    if (step >= 0)
+    if (songStep >= 0) {
+        const int perBar = cfg::kStepsPerBeat * cfg::kBeatsPerBar;
+        snprintf(pos, sizeof(pos), "BAR %d.%d", songStep / perBar + 1, (songStep % perBar) / cfg::kStepsPerBeat + 1);
+    } else if (step >= 0)
     {
         if (es.queuedPattern != 0xff)
             snprintf(pos, sizeof(pos), "P%d>%d %d.%d", es.pattern + 1, es.queuedPattern + 1, step / 4 + 1, step % 4 + 1);
@@ -307,6 +312,11 @@ void App::publishTelemetry()
     t[21] = as.hwStale;
     t[22] = as.blocks;
     t[23] = as.spuBytes;
+    t[24] = (uint32_t)ctx_.heardSongStep();
+    t[25] = session_.project().clipCount;
+    t[26] = engine_.status().songMode;
+    t[27] = engine_.status().songBars;
+    t[28] = engine_.status().pattern;
 }
 
 void App::frame()

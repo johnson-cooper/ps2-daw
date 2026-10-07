@@ -55,6 +55,23 @@ public:
     bool patternIsEmpty(int pattern) const;
     void setPatternName(int pattern, const char* name);
 
+    // Playlist. A clip plays `pattern` on `track` from `startBar` for
+    // `lengthBars`. Clips on one track never overlap: placing over existing
+    // clips replaces them. All of these return false (and change nothing)
+    // for out-of-range arguments or when the clip table is full.
+    bool placeClip(int track, int startBar, int pattern, int lengthBars);
+    bool removeClip(int index);
+    // Grows/shrinks a clip, never into the next clip on its track or past the
+    // song limit. Returns the resulting length (0 if the index is invalid).
+    int setClipLength(int index, int lengthBars);
+    void clearTrack(int track);
+    void clearPlaylist();
+    // Song mode plays the playlist; otherwise the current pattern loops.
+    void setSongMode(bool on);
+    bool songMode() const { return project_.songMode != 0; }
+    // Pattern length in bars (ceil(steps / 16)), the natural clip length.
+    int patternBars(int pattern) const;
+
     // Channel strip
     void setVolume(int channel, int volume);
     void setPan(int channel, int pan);
@@ -87,6 +104,7 @@ public:
 private:
     bool post(CmdType t, int a = 0, int b = 0, int c = 0, int32_t value = 0);
     void syncAll();
+    void syncClips();
     int resolveSample(const ChannelData& c) const;
 
     AudioEngine& engine_;

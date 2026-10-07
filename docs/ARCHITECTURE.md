@@ -190,9 +190,23 @@ loop. Stop applies a pending switch at once. `Session::selectPattern` moves the
 editing pattern immediately and queues the engine switch per
 `Session::switchMode()`.
 
+## Playlist and song mode (Milestone 4)
+
+The UI owns the clips (`Project::clips`); `Session` mirrors them to the engine
+with `SetClip`/`SetClipCount`/`SetSongMode`, so the audio thread keeps its own
+copy (64 small structs) and never reads the project.
+
+In song mode the transport wraps at the end of the last clip instead of at the
+pattern length, so the same sample-accurate clock drives the timeline. At each
+step the engine finds every clip covering the current bar, plays that pattern at
+`(songStep - clipStart) % patternLength` and takes, per channel, the loudest
+velocity among the active clips, so two clips hitting one channel never double
+trigger. `StepMark` carries the absolute `songStep` for the playhead and
+`EngineStatus::songMode`/`songBars` for the UI. Editing while playing is safe: if
+the song shrinks below the playhead the transport wraps on the next step.
+Leaving song mode re-selects the edited pattern.
+
 ## Planned extension points
 
 * Mixer routing: `ChannelData::route` is already saved; inserts will be a
   fixed array of small DSP modules per strip.
-* Playlist: `Project::clips` (pattern references, not copies) is already in
-  the file format.

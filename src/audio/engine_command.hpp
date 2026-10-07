@@ -28,6 +28,9 @@ enum class CmdType : uint8_t {
     PreviewChannel,      // a = channel
     PreviewSample,       // value = sample slot, b = VoiceMode
     SetSampleHwReady,    // value = sample slot, a = 0/1
+    SetClip,             // a = index, b = track, c = pattern, value = startBar | (lengthBars << 16)
+    SetClipCount,        // value = number of valid clips
+    SetSongMode,         // value = 0 pattern loop, 1 play the playlist
     ReleaseSample,       // value = sample slot: stop its voices, then acknowledge
     AllVoicesOff,
 };

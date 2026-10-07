@@ -13,7 +13,7 @@ can also be played directly on SPU2 hardware voices.
 
 ## Status
 
-Milestones 1-3 are implemented. Validation is tracked in three separate
+Milestones 1-4 are implemented. Validation is tracked in three separate
 columns, because they mean different things:
 
 * **Builds**: `ps2build build` (PS2Build v2026.10.02, GCC 15.3) produces the ELF.
@@ -36,7 +36,7 @@ columns, because they mean different things:
 | Optional SPU2 upload of mono imports | yes | **no** | not yet |
 | Queued pattern switching (beat / bar), copy, duplicate, names | yes | yes (switch observed) | not yet |
 | Safe project saves (`.TMP` + `.BAK`), load recovery, slot info | yes | **no** (needs USB) | not yet |
-| Playlist / arrangement | Milestone 4 | | |
+| Playlist: 6 tracks x 128 bars, clips, song mode with looping playhead | yes | yes (clips placed, song played and looped) | not yet |
 | Effects / DSP, piano roll, WAV export | later | | |
 
 The platform-independent code (timing, formats, sample lifecycle, library,
@@ -89,7 +89,7 @@ Hold **SELECT** during boot to skip the USB storage drivers (recovery option).
 | Right stick | selected channel volume (up/down) and pan (left/right) |
 | START | play / pause |
 | L3 | stop and rewind |
-| SELECT | next view (Rack, Mixer, Browser, Project) |
+| SELECT | next view (Rack, Song, Mixer, Browser, Project) |
 | R3 | debug overlay |
 
 Full per-view bindings: [docs/CONTROLS.md](docs/CONTROLS.md).
@@ -158,7 +158,7 @@ for the test plan and what to report.
 * `src/audio`: platform-independent engine (host-testable).
 * `src/project`: song model, `.ps2daw` format, Session (edit API).
 * `src/platform`: PS2 specifics (IOP, GS, pad, audio backend, storage).
-* `src/ui`: widgets and views.
+* `src/ui`: widgets and views (Rack, Song/Playlist, Mixer, Browser, Project).
 
 Details: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md),
 file format: [docs/PROJECT_FORMAT.md](docs/PROJECT_FORMAT.md).
@@ -168,7 +168,7 @@ file format: [docs/PROJECT_FORMAT.md](docs/PROJECT_FORMAT.md).
 1. **Channel Rack + real audio** (done, awaiting hardware report)
 2. **WAV/ADP loading from USB, sample browser** (done, awaiting hardware report)
 3. **Multiple patterns UX, project save/load polish** (done, awaiting hardware report)
-4. Playlist / arrangement
+4. **Playlist / arrangement** (done, awaiting hardware report)
 5. Mixer: routing, inserts, better meters
 6. Lightweight DSP (gain, filters, delay, distortion, compressor)
 7. Piano roll + pitched sample instruments

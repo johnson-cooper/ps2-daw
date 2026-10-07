@@ -23,7 +23,7 @@ bytes (printable ASCII; anything else is replaced with `?` on load).
 | `PROJ` | str name, u32 tempo (BPM x 100), u8 master volume, u8 current pattern, u8 channel count |
 | `CHAN` (x8) | u8 index, str name, str sample reference, u8 volume, s8 pan, u8 flags (bit0 mute, bit1 solo), u8 voice mode (0 software, 1 SPU2), u8 route (0 = master) |
 | `PATT` (x8) | u8 index, str name, u8 length (steps), u8 channels, u8 steps, then channels x steps velocity bytes (0 = off, 1-127) |
-| `PLST` | u16 clip count, then per clip: u8 track, u8 pattern, u16 start bar, u16 length bars (reserved for the playlist) |
+| `PLST` | u16 clip count, then per clip: u8 track, u8 pattern, u16 start bar, u16 length bars; then an optional u8 song mode (1 = play the playlist; absent in older files = 0) |
 | `END ` | u32 CRC-32 (IEEE) of every byte before this chunk |
 
 Sample references (at most 63 characters):
@@ -47,3 +47,8 @@ Validation on load: every length is bounds-checked against the real buffer,
 values are clamped to legal ranges, a missing `PROJ` or `END ` chunk or a CRC
 mismatch rejects the file with a readable reason and leaves the current song
 untouched.
+
+Playlist validation on load: clips with a track >= 6, pattern >= 8, length 0 or
+start bar >= 128 are dropped, lengths are clamped so a clip ends by bar 128,
+a clip overlapping an earlier clip on the same track is dropped, and the
+survivors are sorted by (start bar, track). At most 64 clips.

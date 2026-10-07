@@ -190,6 +190,7 @@ size_t save(const Project& p, uint8_t* buf, size_t cap)
         w.u16(p.clips[i].startBar);
         w.u16(p.clips[i].lengthBars);
     }
+    w.u8(p.songMode ? 1 : 0); // trailing optional field: older files simply end after the clips
     w.end(c);
 
     // Trailer: CRC32 of everything before the END chunk.
@@ -293,6 +294,8 @@ bool load(const uint8_t* data, size_t size, Project& out, char* err, size_t errC
             if (!b.ok())
                 return fail(err, errCap, "corrupt playlist chunk");
             p.clipCount = n;
+            p.songMode = b.remaining() >= 1 ? (b.u8() ? 1 : 0) : 0;
+            p.sanitizeClips();
         } else if (memcmp(tag, "END ", 4) == 0) {
             const uint32_t stored = b.u32();
             if (!b.ok() || stored != crc32(data, chunkStart))

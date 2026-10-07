@@ -53,3 +53,55 @@ void Project::resetDemo()
     channels[2].volume = 64;
     channels[3].volume = 60;
 }
+
+void Project::sanitizeClips()
+{
+    int kept = 0;
+    PlaylistClip out[kMaxClips];
+    const int n = clipCount > kMaxClips ? kMaxClips : clipCount;
+    for (int i = 0; i < n; ++i) {
+        PlaylistClip c = clips[i];
+        if (c.track >= cfg::kPlaylistTracks || c.pattern >= cfg::kMaxPatterns || c.lengthBars == 0 ||
+            c.startBar >= cfg::kMaxSongBars)
+            continue;
+        if ((int)c.startBar + c.lengthBars > cfg::kMaxSongBars)
+            c.lengthBars = (uint16_t)(cfg::kMaxSongBars - c.startBar);
+        bool overlap = false;
+        for (int k = 0; k < kept && !overlap; ++k)
+            overlap = out[k].track == c.track && c.startBar < out[k].startBar + out[k].lengthBars &&
+                      out[k].startBar < c.startBar + c.lengthBars;
+        if (!overlap)
+            out[kept++] = c;
+    }
+    // Insertion sort by (startBar, track): stable and tiny.
+    for (int i = 1; i < kept; ++i) {
+        PlaylistClip t = out[i];
+        int j = i - 1;
+        while (j >= 0 && (out[j].startBar > t.startBar || (out[j].startBar == t.startBar && out[j].track > t.track))) {
+            out[j + 1] = out[j];
+            --j;
+        }
+        out[j + 1] = t;
+    }
+    memset(clips, 0, sizeof(clips));
+    for (int i = 0; i < kept; ++i)
+        clips[i] = out[i];
+    clipCount = (uint16_t)kept;
+}
+
+int Project::clipAt(int track, int bar) const
+{
+    for (int i = 0; i < clipCount && i < kMaxClips; ++i)
+        if (clips[i].track == track && bar >= clips[i].startBar && bar < clips[i].startBar + clips[i].lengthBars)
+            return i;
+    return -1;
+}
+
+int Project::songBars() const
+{
+    int end = 0;
+    for (int i = 0; i < clipCount && i < kMaxClips; ++i)
+        if (clips[i].startBar + clips[i].lengthBars > end)
+            end = clips[i].startBar + clips[i].lengthBars;
+    return end;
+}

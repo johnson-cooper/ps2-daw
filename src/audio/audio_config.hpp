@@ -27,6 +27,12 @@ constexpr int kMaxSteps = 64;
 constexpr int kDefaultSteps = 16;
 constexpr int kMaxSamples = 32;
 
+// Playlist: tracks are rows, a bar is 16 steps. A clip plays one pattern
+// (looped if the clip is longer than the pattern) for lengthBars bars.
+constexpr int kPlaylistTracks = 6;
+constexpr int kMaxSongBars = 128;
+constexpr int kMaxClips = 64;
+
 // Software voice pool shared by all channels.
 constexpr int kMaxVoices = 24;
 

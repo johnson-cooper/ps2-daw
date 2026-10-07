@@ -15,7 +15,7 @@
 #include "project/session.hpp"
 #include "ui/widgets.hpp"
 
-enum class ViewId : uint8_t { ChannelRack, Mixer, Browser, Project, Count };
+enum class ViewId : uint8_t { ChannelRack, Playlist, Mixer, Browser, Project, Count };
 
 // Everything a view may use. Views change the song only through `session`.
 struct UiContext {
@@ -43,6 +43,8 @@ struct UiContext {
     uint32_t heardFrame() const;
     // Pattern step currently audible, or -1 when stopped.
     int heardStep() const;
+    // Absolute song step (playlist mode) currently audible, or -1 when stopped.
+    int heardSongStep() const;
     // True for ~90 ms after channel `ch` was heard triggering.
     bool channelActive(int ch) const;
 };

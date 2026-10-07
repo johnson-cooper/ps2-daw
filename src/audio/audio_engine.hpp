@@ -35,8 +35,9 @@ struct HwTrigger {
 // running ahead by the output latency.
 struct StepMark {
     uint32_t frame;
-    uint8_t step;
-    uint8_t pattern;
+    uint32_t songStep;  // absolute step in the song (playlist mode); equals `step` otherwise
+    uint8_t step;       // step within the pattern that fired
+    uint8_t pattern;    // pattern that fired (the first active clip's in song mode)
 };
 
 struct EngineStatus {
@@ -46,6 +47,8 @@ struct EngineStatus {
     volatile uint8_t transport = 0;        // Transport::State
     volatile uint8_t pattern = 0;
     volatile uint8_t queuedPattern = 0xff; // pending switch target, 0xff = none
+    volatile uint8_t songMode = 0;         // 1 while the playlist drives playback
+    volatile uint16_t songBars = 0;        // length of the song being played
     volatile uint32_t bpmCenti = cfg::kDefaultBpmCenti;
     volatile uint32_t songFrames = 0;
 
@@ -91,6 +94,9 @@ private:
     void applyCommands();
     void apply(const Command& c);
     void fireStep(int step, uint32_t frameInBlock);
+    void fireSongStep(int songStep, uint32_t frameInBlock);
+    bool songActive() const { return songMode_ && clipCount_ > 0 && songSteps_ > 0; }
+    void recomputeSong();
     void triggerChannel(int ch, int velocity, uint32_t frameInBlock);
     bool triggerSample(int ch, int sampleSlot, int velocity, VoiceMode mode, uint32_t frameInBlock);
     void publish();
@@ -110,6 +116,15 @@ private:
     uint32_t blockStart_;
     int queuedPattern_;     // -1 = none
     int queuedQuantum_;     // steps between allowed switch points
+
+    struct Clip {
+        uint8_t track, pattern;
+        uint16_t startBar, lengthBars;
+    };
+    Clip clips_[cfg::kMaxClips];
+    int clipCount_;
+    int songSteps_;         // length of the song in steps (0 = no clips)
+    bool songMode_;
 
     EngineStatus status_;
 };

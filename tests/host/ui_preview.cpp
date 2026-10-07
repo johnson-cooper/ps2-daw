@@ -22,6 +22,7 @@
 #include "ui/debug_overlay.hpp"
 #include "ui/font.hpp"
 #include "ui/mixer_view.hpp"
+#include "ui/playlist_view.hpp"
 #include "ui/project_view.hpp"
 #include "ui/theme.hpp"
 
@@ -215,8 +216,8 @@ static void chrome(Gfx& g, UiContext& ctx, int tab, View& v)
     g.text(250, 18, "120.00 BPM", theme::kText);
     g.text(390, 18, "P1 2.1", theme::kText);
     g.text(540, 18, G_NOTE " OK", theme::kOk);
-    const char* labels[] = {"RACK", "MIXER", "BROWSER", "PROJECT"};
-    ui::tabBar(g, theme::kSafeLeft, 48, labels, 4, tab);
+    const char* labels[] = {"RACK", "SONG", "MIXER", "BROWSER", "PROJECT"};
+    ui::tabBar(g, theme::kSafeLeft, 48, labels, 5, tab);
     g.text(theme::kSafeRight - Gfx::textWidth("SELECT: VIEW", 1), 50, "SELECT: VIEW", theme::kTextDim, 1, 2);
     v.draw(g, ctx);
     const int y = kViewBottom + 4;
@@ -277,13 +278,20 @@ int main(int argc, char** argv)
     ctx.selectedChannel = 2;
     Gfx g;
     ChannelRackView rack;
+    PlaylistView playlist;
     MixerView mixer;
     BrowserView browser;
     ProjectView project;
-    View* views[] = {&rack, &mixer, &browser, &project};
-    const char* names[] = {"rack", "mixer", "browser", "project"};
+    View* views[] = {&rack, &playlist, &mixer, &browser, &project};
+    const char* names[] = {"rack", "playlist", "mixer", "browser", "project"};
     char path[256];
-    for (int i = 0; i < 4; ++i) {
+    session.placeClip(0, 0, 0, 2);
+    session.placeClip(0, 2, 1, 1);
+    session.placeClip(1, 1, 2, 4);
+    session.placeClip(2, 4, 3, 2);
+    session.placeClip(3, 0, 0, 20); // runs past the visible window
+    session.setSongMode(true);
+    for (int i = 0; i < 5; ++i) {
         g.beginFrame(theme::kBackground);
         chrome(g, ctx, i, *views[i]);
         snprintf(path, sizeof(path), "%s/%s.png", outDir, names[i]);
@@ -300,14 +308,14 @@ int main(int argc, char** argv)
         for (int i = 0; i < 4; ++i)
             browser.update(dn, ctx);
         g.beginFrame(theme::kBackground);
-        chrome(g, ctx, 2, browser);
+        chrome(g, ctx, 3, browser);
         snprintf(path, sizeof(path), "%s/browser_usb.png", outDir);
         writePng(path);
         InputState r2;
         r2.pressed = r2.repeat = btn::R2;
         browser.update(r2, ctx);
         g.beginFrame(theme::kBackground);
-        chrome(g, ctx, 2, browser);
+        chrome(g, ctx, 3, browser);
         menu.draw(g);
         snprintf(path, sizeof(path), "%s/browser_menu.png", outDir);
         writePng(path);

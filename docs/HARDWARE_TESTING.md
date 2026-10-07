@@ -78,6 +78,22 @@ non-audio file and one WAV over 3 MiB there too. If you have a `.adp` file, add 
     switch lands on the bar line.
 12. **Load confirmation** - edit something, then Load: it asks for a second Cross.
 
+## Milestone 4 test plan (Playlist)
+
+1. SELECT to **SONG**. Cross places the current pattern at the cursor; L2/R2
+   change pattern, L1/R1 change clip length, Square picks up a clip's pattern,
+   Cross on a clip removes it.
+2. Build a few bars on two tracks (some overlapping vertically), press Circle for
+   SONG mode, START: the header shows `BAR n.b`, the playhead crosses the grid in
+   time with the sound and loops at the red end line.
+3. While it plays, add/remove clips and lengthen the last clip: playback
+   continues without clicks or tempo jumps. Shrinking the song under the
+   playhead wraps cleanly.
+4. Save, reload: clips and the mode come back. Circle back to PATTERN mode and
+   confirm the rack loops the current pattern again.
+5. Debug overlay (R3) during a long song with several clips: note underruns and
+   render max.
+
 ## What to report
 
 * Console model (e.g. SCPH-30001, 70012, 90001), region, how you launched it

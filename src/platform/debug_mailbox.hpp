@@ -22,7 +22,7 @@ struct DebugMailbox {
     volatile uint32_t command;
     volatile uint32_t arg;
     // App -> debugger, refreshed every frame (see App::publishTelemetry()).
-    volatile uint32_t telemetry[24];
+    volatile uint32_t telemetry[32];
 };
 
 enum DebugCommand : uint32_t {

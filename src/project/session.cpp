@@ -5,6 +5,8 @@
 #include "audio/sample_ref.hpp"
 #include "core/strutil.hpp"
 
+static bool inRange(int v, int n) { return v >= 0 && v < n; }
+
 Session::Session(AudioEngine& engine, SampleBank& bank, bool (*waitFn)())
     : engine_(engine), bank_(bank), wait_(waitFn), dropped_(0), loadSerial_(0), releasePending_(0)
 {
@@ -73,7 +75,120 @@ void Session::syncAll()
                 if (pd.velocity[ch][s])
                     post(CmdType::SetStep, pi, ch, s, pd.velocity[ch][s]);
     }
+    syncClips();
+    post(CmdType::SetSongMode, 0, 0, 0, p.songMode);
     post(CmdType::SelectPattern, p.currentPattern); // immediate: the whole song was just replaced
+}
+
+void Session::syncClips()
+{
+    const Project& p = project_;
+    for (int i = 0; i < p.clipCount; ++i) {
+        const PlaylistClip& k = p.clips[i];
+        post(CmdType::SetClip, i, k.track, k.pattern, (int32_t)(k.startBar | ((uint32_t)k.lengthBars << 16)));
+    }
+    post(CmdType::SetClipCount, 0, 0, 0, p.clipCount);
+}
+
+int Session::patternBars(int pattern) const
+{
+    if (!inRange(pattern, cfg::kMaxPatterns))
+        return 1;
+    const int steps = project_.patterns[pattern].length;
+    const int perBar = cfg::kStepsPerBeat * cfg::kBeatsPerBar;
+    return (steps + perBar - 1) / perBar;
+}
+
+bool Session::placeClip(int track, int startBar, int pattern, int lengthBars)
+{
+    if (!inRange(track, cfg::kPlaylistTracks) || !inRange(startBar, cfg::kMaxSongBars) || !inRange(pattern, cfg::kMaxPatterns) ||
+        lengthBars < 1)
+        return false;
+    if (startBar + lengthBars > cfg::kMaxSongBars)
+        lengthBars = cfg::kMaxSongBars - startBar;
+    Project& p = project_;
+    // Make room: drop every clip on this track that overlaps the new one.
+    PlaylistClip kept[Project::kMaxClips];
+    int n = 0;
+    for (int i = 0; i < p.clipCount; ++i) {
+        const PlaylistClip& k = p.clips[i];
+        const bool overlap = k.track == track && startBar < k.startBar + k.lengthBars && k.startBar < startBar + lengthBars;
+        if (!overlap)
+            kept[n++] = k;
+    }
+    if (n >= Project::kMaxClips)
+        return false; // table full (checked before touching the project)
+    PlaylistClip nc;
+    nc.track = (uint8_t)track;
+    nc.pattern = (uint8_t)pattern;
+    nc.startBar = (uint16_t)startBar;
+    nc.lengthBars = (uint16_t)lengthBars;
+    kept[n++] = nc;
+    memcpy(p.clips, kept, sizeof(PlaylistClip) * (size_t)n);
+    p.clipCount = (uint16_t)n;
+    p.sanitizeClips(); // sorted order
+    syncClips();
+    return true;
+}
+
+bool Session::removeClip(int index)
+{
+    Project& p = project_;
+    if (!inRange(index, p.clipCount))
+        return false;
+    for (int i = index; i + 1 < p.clipCount; ++i)
+        p.clips[i] = p.clips[i + 1];
+    --p.clipCount;
+    memset(&p.clips[p.clipCount], 0, sizeof(PlaylistClip));
+    syncClips();
+    return true;
+}
+
+int Session::setClipLength(int index, int lengthBars)
+{
+    Project& p = project_;
+    if (!inRange(index, p.clipCount))
+        return 0;
+    PlaylistClip& k = p.clips[index];
+    int limit = cfg::kMaxSongBars - k.startBar;
+    for (int i = 0; i < p.clipCount; ++i) {
+        const PlaylistClip& o = p.clips[i];
+        if (i != index && o.track == k.track && o.startBar >= k.startBar + 1 && o.startBar - k.startBar < limit)
+            limit = o.startBar - k.startBar;
+    }
+    lengthBars = lengthBars < 1 ? 1 : (lengthBars > limit ? limit : lengthBars);
+    k.lengthBars = (uint16_t)lengthBars;
+    syncClips();
+    return lengthBars;
+}
+
+void Session::clearTrack(int track)
+{
+    Project& p = project_;
+    int n = 0;
+    for (int i = 0; i < p.clipCount; ++i)
+        if (p.clips[i].track != track)
+            p.clips[n++] = p.clips[i];
+    for (int i = n; i < p.clipCount; ++i)
+        memset(&p.clips[i], 0, sizeof(PlaylistClip));
+    p.clipCount = (uint16_t)n;
+    syncClips();
+}
+
+void Session::clearPlaylist()
+{
+    memset(project_.clips, 0, sizeof(project_.clips));
+    project_.clipCount = 0;
+    syncClips();
+}
+
+void Session::setSongMode(bool on)
+{
+    project_.songMode = on ? 1 : 0;
+    post(CmdType::SetSongMode, 0, 0, 0, on ? 1 : 0);
+    // Leaving song mode: the engine goes back to looping the edited pattern.
+    if (!on)
+        post(CmdType::SelectPattern, project_.currentPattern);
 }
 
 void Session::play() { post(CmdType::Play); }
@@ -98,7 +213,6 @@ void Session::setBpmCenti(int bpmCenti)
     post(CmdType::SetBpm, 0, 0, 0, bpmCenti);
 }
 
-static bool inRange(int v, int n) { return v >= 0 && v < n; }
 
 void Session::setStep(int pattern, int channel, int step, int velocity)
 {

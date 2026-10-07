@@ -33,6 +33,21 @@ int UiContext::heardStep() const
     return -1;
 }
 
+int UiContext::heardSongStep() const
+{
+    const EngineStatus& st = engine.status();
+    if (st.transport == (uint8_t)Transport::State::Stopped || !st.songMode)
+        return -1;
+    const uint32_t heard = heardFrame();
+    const uint32_t serial = __atomic_load_n(&st.markSerial, __ATOMIC_ACQUIRE);
+    for (uint32_t i = 0; i < EngineStatus::kMarks && i < serial; ++i) {
+        const StepMark& m = st.marks[(serial - 1 - i) % EngineStatus::kMarks];
+        if ((int32_t)(heard - m.frame) >= 0)
+            return (int)m.songStep;
+    }
+    return -1;
+}
+
 bool UiContext::channelActive(int ch) const
 {
     const EngineStatus& st = engine.status();

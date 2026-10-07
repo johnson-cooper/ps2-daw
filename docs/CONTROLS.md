@@ -49,6 +49,27 @@ Indicators: LED flashes when the channel is heard (green = software, purple =
 SPU2); mute box green = playing, gold = solo, dark with red border = muted;
 purple bar on the name = SPU2 voice; pale bar under a step = playhead.
 
+## Song (Playlist)
+
+Rows are tracks (6), columns are bars (up to 128, 16 shown, the view scrolls).
+A clip puts a pattern on a track for a number of bars; the pattern loops while
+the clip lasts. Clips on different tracks play together; clips on one track
+never overlap (placing over one replaces it).
+
+| Button | Action |
+| --- | --- |
+| D-pad | move the cursor (track / bar) |
+| Cross | empty cell: place the current pattern (brush length); on a clip: remove it |
+| Square | on a clip: pick up its pattern and length as the brush |
+| L2 / R2 | previous / next pattern (the brush; same selection as the rack) |
+| L1 / R1 | on a clip: shorten / lengthen it (stops at the next clip on the track); on an empty cell: brush length |
+| Circle | toggle SONG mode (plays the playlist) / PATTERN mode (loops the current pattern) |
+| Triangle | menu: mode, clear track, clear whole playlist (asks) |
+
+In SONG mode START plays from bar 1 and loops at the end of the last clip; the
+header shows `BAR b.beat` and a playhead runs across the grid (a red line marks
+the song end). With an empty playlist the engine keeps looping the pattern.
+
 ## Mixer
 
 | Button | Action |

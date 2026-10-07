@@ -212,6 +212,7 @@ static void testProjectRoundTrip()
     a.patterns[2].velocity[7][47] = 99;
     a.currentPattern = 2;
     a.clipCount = 2;
+    a.clips[0] = {0, 0, 0, 4};
     a.clips[1] = {3, 2, 8, 4};
 
     static uint8_t buf[projectio::kMaxFileBytes];
@@ -381,6 +382,7 @@ static void testQueue()
 
 int runSampleTests();
 int runWorkflowTests();
+int runPlaylistTests();
 
 int main()
 {
@@ -401,6 +403,7 @@ int main()
     testAdpcm();
     g_failures += runSampleTests();
     g_failures += runWorkflowTests();
+    g_failures += runPlaylistTests();
     if (g_failures) {
         printf("FAILED: %d check(s)\n", g_failures);
         return 1;
