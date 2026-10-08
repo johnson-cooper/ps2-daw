@@ -152,6 +152,7 @@ size_t save(const Project& p, uint8_t* buf, size_t cap)
     w.u8(p.masterVolume);
     w.u8(p.currentPattern);
     w.u8(p.channelCount);
+    w.u8(p.swing); // trailing optional field
     w.end(c);
 
     for (int ch = 0; ch < cfg::kMaxChannels; ++ch) {
@@ -195,9 +196,111 @@ size_t save(const Project& p, uint8_t* buf, size_t cap)
                 w.u8(pd.notes[ch][i].length);
             }
             w.end(c);
+            // Sub-step timing rides in a separate chunk so older readers still load the notes
+            // (rounded to whole steps) and skip this one.
+            int fine = 0;
+            for (int i = 0; i < n; ++i)
+                fine += (pd.notes[ch][i].tick || pd.notes[ch][i].lenTicks) ? 1 : 0;
+            if (fine) {
+                c = w.begin("NOTX");
+                w.u8((uint8_t)pi);
+                w.u8((uint8_t)ch);
+                w.u8((uint8_t)fine);
+                for (int i = 0; i < n; ++i) {
+                    const PianoNote& nt = pd.notes[ch][i];
+                    if (!nt.tick && !nt.lenTicks)
+                        continue;
+                    w.u8(nt.step);
+                    w.u8(nt.pitch);
+                    w.u8(nt.tick);
+                    w.u16(nt.lenTicks);
+                }
+                w.end(c);
+            }
         }
     }
 
+    // Instruments (sampler/synth, AHDSR, synth patch): one chunk per channel.
+    for (int ch = 0; ch < cfg::kMaxChannels; ++ch) {
+        const InstrumentData& in = p.channels[ch].inst;
+        c = w.begin("INST");
+        w.u8((uint8_t)ch);
+        w.u8(in.kind);
+        w.u8((uint8_t)cfg::kEnvParams);
+        for (int i = 0; i < cfg::kEnvParams; ++i)
+            w.u16((uint16_t)in.env[i]);
+        w.u8((uint8_t)cfg::kSynthParams);
+        for (int i = 0; i < cfg::kSynthParams; ++i)
+            w.u16((uint16_t)in.synth[i]);
+        w.end(c);
+    }
+
+    // Mixer: tracks 0 (master chain) .. 8 with their effect chains.
+    for (int t = 0; t < cfg::kMixBuses; ++t) {
+        const MixerTrackData& m = p.tracks[t];
+        c = w.begin("MIXR");
+        w.u8((uint8_t)t);
+        w.str(m.name, sizeof(m.name));
+        w.u8(m.volume);
+        w.u8((uint8_t)m.pan);
+        w.u8((uint8_t)((m.mute ? 1 : 0) | (m.solo ? 2 : 0)));
+        w.u8((uint8_t)cfg::kFxSlots);
+        for (int s = 0; s < cfg::kFxSlots; ++s) {
+            w.u8(m.fx[s].type);
+            w.u8(m.fx[s].bypass ? 1 : 0);
+            w.u8((uint8_t)cfg::kFxParams);
+            for (int i = 0; i < cfg::kFxParams; ++i)
+                w.u16((uint16_t)m.fx[s].p[i]);
+        }
+        w.end(c);
+    }
+
+    // Playlist track names and audio clips (with the sample references they use).
+    c = w.begin("TNAM");
+    w.u8((uint8_t)cfg::kPlaylistTracks);
+    for (int t = 0; t < cfg::kPlaylistTracks; ++t)
+        w.str(p.playlistTrackName[t], sizeof(p.playlistTrackName[t]));
+    w.end(c);
+
+    c = w.begin("ACLP");
+    w.u8((uint8_t)cfg::kMaxAudioSources);
+    for (int i = 0; i < cfg::kMaxAudioSources; ++i)
+        w.str(p.audioRefs[i], sizeof(p.audioRefs[i]));
+    const int na = p.audioClipCount > cfg::kMaxAudioClips ? cfg::kMaxAudioClips : p.audioClipCount;
+    w.u16((uint16_t)na);
+    for (int i = 0; i < na; ++i) {
+        const AudioClipData& k = p.audioClips[i];
+        w.u8(k.track);
+        w.u8(k.source);
+        w.u16(k.startBar);
+        w.u16(k.lengthBars);
+        w.u8(k.volume);
+        w.u8(k.loop ? 1 : 0);
+        w.u8(k.route);
+        w.u32(k.trimStart);
+        w.u32(k.trimEnd);
+    }
+    w.end(c);
+
+    // Channel masks of ungrouped clips, keyed by (track, start bar) so they survive the clip sort.
+    {
+        int masked = 0;
+        for (int i = 0; i < p.clipCount && i < Project::kMaxClips; ++i)
+            masked += (p.clips[i].chanMask != kAllChannels && p.clips[i].chanMask != 0) ? 1 : 0;
+        if (masked) {
+            c = w.begin("PMSK");
+            w.u16((uint16_t)masked);
+            for (int i = 0; i < p.clipCount && i < Project::kMaxClips; ++i) {
+                const PlaylistClip& k = p.clips[i];
+                if (k.chanMask == kAllChannels || k.chanMask == 0)
+                    continue;
+                w.u8(k.track);
+                w.u16(k.startBar);
+                w.u16(k.chanMask);
+            }
+            w.end(c);
+        }
+    }
     c = w.begin("PLST");
     const uint16_t clips = p.clipCount > Project::kMaxClips ? Project::kMaxClips : p.clipCount;
     w.u16(clips);
@@ -243,6 +346,9 @@ bool load(const uint8_t* data, size_t size, Project& out, char* err, size_t errC
 
     Project p;
     p.resetEmpty();
+    uint8_t maskTrack[64];
+    uint16_t maskStart[64], maskBits[64];
+    int maskCount = 0;
     bool sawEnd = false, sawProj = false;
 
     while (r.remaining() >= 8 && !sawEnd) {
@@ -263,6 +369,7 @@ bool load(const uint8_t* data, size_t size, Project& out, char* err, size_t errC
             p.currentPattern = (uint8_t)clampi(b.u8(), 0, cfg::kMaxPatterns - 1);
             p.channelCount = (uint8_t)clampi(b.u8(), 1, cfg::kMaxChannels);
             sawProj = b.ok();
+            p.swing = b.remaining() >= 1 ? (uint8_t)clampi(b.u8(), 0, 50) : 0;
         } else if (memcmp(tag, "CHAN", 4) == 0) {
             const int ch = b.u8();
             if (ch < cfg::kMaxChannels) {
@@ -308,7 +415,7 @@ bool load(const uint8_t* data, size_t size, Project& out, char* err, size_t errC
                 PatternData& pd = p.patterns[pi];
                 int kept = 0;
                 for (int i = 0; i < count; ++i) {
-                    PianoNote n;
+                    PianoNote n = {};
                     n.step = b.u8();
                     n.pitch = b.u8();
                     n.velocity = b.u8();
@@ -328,6 +435,45 @@ bool load(const uint8_t* data, size_t size, Project& out, char* err, size_t errC
                 }
                 pd.noteCount[ch] = (uint8_t)kept;
             }
+        } else if (memcmp(tag, "PMSK", 4) == 0) {
+            const int n = b.u16();
+            for (int i = 0; i < n; ++i) {
+                const uint8_t track = b.u8();
+                const uint16_t start = b.u16();
+                const uint16_t mask = b.u16();
+                if (!b.ok())
+                    return fail(err, errCap, "corrupt clip mask chunk");
+                if (maskCount < 64) {
+                    maskTrack[maskCount] = track;
+                    maskStart[maskCount] = start;
+                    maskBits[maskCount++] = mask;
+                }
+            }
+        } else if (memcmp(tag, "NOTX", 4) == 0) {
+            const int pi = b.u8();
+            const int ch = b.u8();
+            const int count = b.u8();
+            for (int i = 0; i < count; ++i) {
+                const int step = b.u8(), pitch = b.u8(), tick = b.u8();
+                const int lenTicks = b.u16();
+                if (!b.ok())
+                    return fail(err, errCap, "corrupt note timing chunk");
+                if (pi >= cfg::kMaxPatterns || ch >= cfg::kMaxChannels)
+                    continue;
+                PatternData& pd = p.patterns[pi];
+                for (int k = 0; k < pd.noteCount[ch]; ++k) { // first untimed note at that step and pitch
+                    PianoNote& n = pd.notes[ch][k];
+                    if (n.step != step || n.pitch != pitch || n.reserved)
+                        continue;
+                    n.reserved = 1;
+                    n.tick = (uint8_t)(tick < cfg::kTicksPerStep ? tick : 0);
+                    if (lenTicks > 0 && lenTicks <= cfg::kMaxSteps * cfg::kTicksPerStep) {
+                        n.lenTicks = (uint16_t)lenTicks;
+                        n.length = (uint8_t)((lenTicks + cfg::kTicksPerStep - 1) / cfg::kTicksPerStep);
+                    }
+                    break;
+                }
+            }
         } else if (memcmp(tag, "PLST", 4) == 0) {
             uint16_t n = b.u16();
             if (n > Project::kMaxClips)
@@ -338,6 +484,7 @@ bool load(const uint8_t* data, size_t size, Project& out, char* err, size_t errC
                 clip.pattern = (uint8_t)clampi(b.u8(), 0, cfg::kMaxPatterns - 1);
                 clip.startBar = b.u16();
                 clip.lengthBars = b.u16();
+                clip.chanMask = kAllChannels;
             }
             if (!b.ok())
                 return fail(err, errCap, "corrupt playlist chunk");
@@ -348,6 +495,97 @@ bool load(const uint8_t* data, size_t size, Project& out, char* err, size_t errC
                 p.trackSolo = b.u8() & ((1u << cfg::kPlaylistTracks) - 1);
             }
             p.sanitizeClips();
+        } else if (memcmp(tag, "INST", 4) == 0) {
+            const int ch = b.u8();
+            InstrumentData in;
+            instr::setDefaults(in);
+            in.kind = b.u8();
+            const int ne = b.u8();
+            for (int i = 0; i < ne; ++i) {
+                const int16_t v = (int16_t)b.u16();
+                if (i < cfg::kEnvParams)
+                    in.env[i] = v;
+            }
+            const int ns = b.u8();
+            for (int i = 0; i < ns; ++i) {
+                const int16_t v = (int16_t)b.u16();
+                if (i < cfg::kSynthParams)
+                    in.synth[i] = v;
+            }
+            if (!b.ok())
+                return fail(err, errCap, "corrupt instrument chunk");
+            if (ch < cfg::kMaxChannels) {
+                instr::sanitize(in);
+                p.channels[ch].inst = in;
+            }
+        } else if (memcmp(tag, "MIXR", 4) == 0) {
+            const int t = b.u8();
+            MixerTrackData m = p.tracks[t < cfg::kMixBuses ? t : 0];
+            b.str(m.name, sizeof(m.name));
+            m.volume = (uint8_t)clampi(b.u8(), 0, 100);
+            m.pan = (int8_t)clampi((int8_t)b.u8(), -100, 100);
+            const uint8_t flags = b.u8();
+            m.mute = flags & 1;
+            m.solo = (flags >> 1) & 1;
+            const int nf = b.u8();
+            for (int s = 0; s < nf; ++s) {
+                FxData f;
+                memset(&f, 0, sizeof(f));
+                f.type = b.u8();
+                f.bypass = b.u8() ? 1 : 0;
+                const int np = b.u8();
+                for (int i = 0; i < np; ++i) {
+                    const int16_t v = (int16_t)b.u16();
+                    if (i < cfg::kFxParams)
+                        f.p[i] = v;
+                }
+                if (s < cfg::kFxSlots) {
+                    fx::sanitize(f);
+                    m.fx[s] = f;
+                }
+            }
+            if (!b.ok())
+                return fail(err, errCap, "corrupt mixer chunk");
+            if (t < cfg::kMixBuses)
+                p.tracks[t] = m;
+        } else if (memcmp(tag, "TNAM", 4) == 0) {
+            const int n = b.u8();
+            for (int t = 0; t < n; ++t) {
+                char tmp[10];
+                b.str(tmp, sizeof(tmp));
+                if (t < cfg::kPlaylistTracks)
+                    memcpy(p.playlistTrackName[t], tmp, sizeof(tmp));
+            }
+            if (!b.ok())
+                return fail(err, errCap, "corrupt track-name chunk");
+        } else if (memcmp(tag, "ACLP", 4) == 0) {
+            const int ns = b.u8();
+            for (int i = 0; i < ns; ++i) {
+                char tmp[64];
+                b.str(tmp, sizeof(tmp));
+                if (i < cfg::kMaxAudioSources)
+                    memcpy(p.audioRefs[i], tmp, sizeof(tmp));
+            }
+            const int n = b.u16();
+            int kept = 0;
+            for (int i = 0; i < n; ++i) {
+                AudioClipData k;
+                memset(&k, 0, sizeof(k));
+                k.track = b.u8();
+                k.source = b.u8();
+                k.startBar = b.u16();
+                k.lengthBars = b.u16();
+                k.volume = b.u8();
+                k.loop = b.u8();
+                k.route = b.u8();
+                k.trimStart = b.u32();
+                k.trimEnd = b.u32();
+                if (!b.ok())
+                    return fail(err, errCap, "corrupt audio clip chunk");
+                if (kept < cfg::kMaxAudioClips)
+                    p.audioClips[kept++] = k;
+            }
+            p.audioClipCount = (uint8_t)kept;
         } else if (memcmp(tag, "END ", 4) == 0) {
             const uint32_t stored = b.u32();
             if (!b.ok() || stored != crc32(data, chunkStart))
@@ -362,6 +600,15 @@ bool load(const uint8_t* data, size_t size, Project& out, char* err, size_t errC
         return fail(err, errCap, "missing PROJ chunk");
     if (!sawEnd)
         return fail(err, errCap, "missing END chunk (truncated)");
+    for (int i = 0; i < maskCount; ++i) // ungrouped clips (the mask chunk comes first in the file)
+        for (int k = 0; k < p.clipCount; ++k)
+            if (p.clips[k].track == maskTrack[i] && p.clips[k].startBar == maskStart[i] && maskBits[i])
+                p.clips[k].chanMask = maskBits[i];
+    for (auto& pd : p.patterns) // clear the loader's marker
+        for (auto& row : pd.notes)
+            for (auto& n : row)
+                n.reserved = 0;
+    p.sanitizeAudio();
     out = p;
     return true;
 }

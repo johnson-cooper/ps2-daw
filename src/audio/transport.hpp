@@ -22,6 +22,9 @@ public:
     Transport();
 
     void setBpmCenti(uint32_t bpmCenti);
+    // Swing: every odd 16th step is delayed by `ticks` (0..12 of the 24 ticks in a step).
+    void setSwingTicks(int ticks);
+    int swingTicks() const { return swing_; }
     uint32_t bpmCenti() const { return bpmCenti_; }
 
     void play();  // from Stopped: restart at step 0; from Paused: resume
@@ -56,6 +59,8 @@ private:
     uint32_t increment_;   // bpmCenti * PPQ, added per frame
     uint64_t acc_;         // ticks * kDenominator (+ fractional remainder)
     uint32_t nextStepTick_;
+    int swing_ = 0;
+    uint32_t tickOfStep(uint32_t step) const { return step * (uint32_t)cfg::kTicksPerStep + ((step & 1) ? (uint32_t)swing_ : 0u); }
     uint32_t songFrames_;
     uint32_t loops_;
 };

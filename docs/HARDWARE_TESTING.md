@@ -115,6 +115,43 @@ non-audio file and one WAV over 3 MiB there too. If you have a `.adp` file, add 
 2. Mute/solo a track from the same menu while the song plays.
 3. Duplicate a clip, and Move a clip (carry it, drop it, and cancel with Circle).
 
+## Mixer, effects, instruments, audio clips, export (Milestones 5, 6, 8)
+
+All of this has run in PCSX2 only. Please test on the console, with a USB stick.
+
+1. **Routing**: MIXER (L2 for INSERTS). Route two drum channels to INSERT 1 (rack menu >
+   Mixer track, or MIXER CHANNELS page > Triangle). Move INSERT 1's fader: both drums follow.
+   Mute / solo an insert; a channel routed straight to the master goes silent while another
+   insert is soloed. Watch the meters and the clip lamp (push a loud sample, raise a Gain).
+2. **Effects**: Circle on INSERT 1, add each effect in turn (delay, reverb, compressor, EQ,
+   filter, distortion, gain), tweak a parameter while a loop plays: no clicks on parameter
+   changes, bypass crossfades. Chain order matters (L1/R1 moves a slot). Put reverb or
+   delay on all inserts to hit the memory pool limit: the mixer should say FX MEMORY FULL
+   and audio should keep playing. Note `underruns` and the render max in the debug overlay.
+3. **Envelope**: INST on a sampler channel, ENVELOPE ON, attack 300 ms: notes fade in;
+   sustained instrument with release 800 ms: notes ring out after their length ends; overlapping
+   notes keep separate envelopes.
+4. **Synth**: INST > INSTRUMENT: SYNTH, step through the presets (Square lead, Warm pad, FM bell,
+   Wobble bass...). Play them from the piano roll, a chord of four notes at once. Report any
+   aliasing you find objectionable (oscillators are not band-limited).
+5. **Audio clips**: import a WAV (BROWSER), SONG > Triangle > Brush: AUDIO SAMPLE, place it on a
+   track next to pattern clips, loop it, trim it, change its volume, route it to an insert with
+   an effect. START: it must start exactly on its bar. Play from a bar inside the clip.
+6. **Export**: PROJECT > Export WAV on a song with synths and effects. Report: how long the
+   progress took relative to the song length, whether the UI stayed responsive, and whether the
+   file plays in a desktop player and sounds identical (including reverb tails). Pull the stick
+   out mid export: the screen must report an error and no half file may remain. Check
+   `PS2DAW/EXPORT/` for a stray `.TMP`.
+7. **Autosave**: edit a project, wait 2 minutes, power off without saving. After boot,
+   PROJECT > Recover autosave must bring it back.
+8. **Performance**: with a busy song (several synth notes, three or more effects), open the
+   debug overlay (R3) and report `render avg / max` and `underruns`. The block period is
+   10.7 ms; PCSX2 measured about 6.7 ms for the built-in stress song (reproduce it with the debug
+   mailbox command 4, see `src/platform/debug_mailbox.hpp`).
+9. **SPU2 voices**: a channel set to SPU2 must still follow its insert's fader and mute; its
+   effects and envelope do not apply (expected). Export a project containing one: it is
+   rendered in software.
+
 ## What to report
 
 * Console model (e.g. SCPH-30001, 70012, 90001), region, how you launched it

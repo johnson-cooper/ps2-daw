@@ -11,7 +11,7 @@
 #include "ui/theme.hpp"
 
 namespace {
-constexpr int kRowH = 19;
+constexpr int kRowH = 17;
 constexpr int kLeftX = theme::kSafeLeft + 8;
 constexpr int kListY = kViewTop + 28;
 const int kLengths[] = {8, 12, 16, 24, 32, 48, 64};
@@ -48,6 +48,12 @@ void ProjectView::adjust(int row, int dir, bool fine, UiContext& ctx)
     switch (row) {
     case RowTempo:
         s.setBpmCenti((int)p.bpmCenti + dir * (fine ? 10 : 100));
+        break;
+    case RowSwing:
+        s.setSwing((int)p.swing + dir * (fine ? 1 : 5));
+        break;
+    case RowMetronome:
+        s.setMetronome(!s.metronome());
         break;
     case RowPattern:
         s.selectPattern((p.currentPattern + dir + cfg::kMaxPatterns) % cfg::kMaxPatterns);
@@ -89,15 +95,69 @@ bool ProjectView::modified(UiContext& ctx)
     return crc != savedCrc_;
 }
 
+void ProjectView::onEnter(UiContext&)
+{
+    slotInfoFor_ = 0;       // re-read the slot and autosave information
+    autoInfoValid_ = false;
+}
+
 void ProjectView::refreshSlotInfo(UiContext& ctx)
 {
     slotInfoFor_ = slot_;
     memset(&slotInfo_, 0, sizeof(slotInfo_));
+    memset(&autoInfo_, 0, sizeof(autoInfo_));
+    autoInfoValid_ = true;
     char dir[64];
     if (!ctx.storage.ready() || !ctx.storage.appPath(dir, sizeof(dir), ""))
         return;
     StorageFiles fs(ctx.storage);
     slotInfo_ = slotstore::peek(fs, dir, slot_, g_fileBuf, sizeof(g_fileBuf));
+    autoInfo_ = slotstore::peek(fs, dir, slotstore::kAutosaveSlot, g_fileBuf, sizeof(g_fileBuf));
+}
+
+void ProjectView::exportWav(UiContext& ctx)
+{
+    Storage& st = ctx.storage;
+    char dir[64];
+    if (!st.ready() || !st.appPath(dir, sizeof(dir), "")) {
+        ctx.log.error(Subsystem::Project, "export: no USB drive ready");
+        ctx.toast("Export needs a USB drive");
+        return;
+    }
+    char exportDir[96], path[160];
+    snprintf(exportDir, sizeof(exportDir), "%s/EXPORT", dir);
+    if (!st.ensureDir(dir) || !st.ensureDir(exportDir)) {
+        ctx.log.error(Subsystem::Project, "export: cannot create PS2DAW/EXPORT");
+        ctx.toast("Cannot create the EXPORT folder on the drive");
+        return;
+    }
+    // File name from the project name: A-Z 0-9 _ - only, at most 20 characters.
+    char base[24];
+    int n = 0;
+    for (const char* c = ctx.session.project().name; *c && n < 20; ++c) {
+        char ch = *c;
+        if (ch >= 'a' && ch <= 'z')
+            ch = (char)(ch - 'a' + 'A');
+        if ((ch >= 'A' && ch <= 'Z') || (ch >= '0' && ch <= '9') || ch == '-' || ch == '_')
+            base[n++] = ch;
+        else if (ch == ' ' && n > 0 && base[n - 1] != '_')
+            base[n++] = '_';
+    }
+    while (n > 0 && base[n - 1] == '_')
+        --n;
+    if (n == 0)
+        snprintf(base, sizeof(base), "SONG");
+    else
+        base[n] = '\0';
+    snprintf(path, sizeof(path), "%s/%s.WAV", exportDir, base);
+    char err[96];
+    const Exporter::Source src = ctx.session.project().songBars() > 0 ? Exporter::Source::Song : Exporter::Source::Pattern;
+    if (!ctx.exporter.begin(path, src, err, sizeof(err))) {
+        ctx.log.error(Subsystem::Project, "export: %s", err);
+        ctx.toast("Export failed: %s", err);
+        return;
+    }
+    ctx.toast("Rendering %s...", src == Exporter::Source::Song ? "the song" : "the pattern");
 }
 
 void ProjectView::save(UiContext& ctx)
@@ -123,7 +183,7 @@ void ProjectView::save(UiContext& ctx)
     refreshSlotInfo(ctx);
 }
 
-void ProjectView::load(UiContext& ctx)
+void ProjectView::load(UiContext& ctx, int slot)
 {
     Storage& st = ctx.storage;
     char dir[64];
@@ -133,7 +193,7 @@ void ProjectView::load(UiContext& ctx)
     }
     if (modified(ctx) && !confirmLoad_) {
         confirmLoad_ = true;
-        ctx.toast("Unsaved changes will be lost. Press " G_CROSS " again to load SLOT%d", slot_);
+        ctx.toast("Unsaved changes will be lost. Press " G_CROSS " again to load %s", slot == slotstore::kAutosaveSlot ? "the autosave" : "this slot");
         return;
     }
     confirmLoad_ = false;
@@ -141,8 +201,8 @@ void ProjectView::load(UiContext& ctx)
     static Project loaded; // ~6 KiB; static keeps it off the stack
     char err[64];
     bool backup = false;
-    if (!slotstore::load(fs, dir, slot_, loaded, g_fileBuf, sizeof(g_fileBuf), &backup, err, sizeof(err))) {
-        ctx.log.error(Subsystem::Project, "SLOT%d: %s", slot_, err);
+    if (!slotstore::load(fs, dir, slot, loaded, g_fileBuf, sizeof(g_fileBuf), &backup, err, sizeof(err))) {
+        ctx.log.error(Subsystem::Project, "%s: %s", slot == slotstore::kAutosaveSlot ? "autosave" : "slot", err);
         return;
     }
     ctx.session.loadProject(loaded);
@@ -150,11 +210,19 @@ void ProjectView::load(UiContext& ctx)
     savedCrc_ = projectio::crc32(g_fileBuf, n);
     haveSavedCrc_ = true;
     if (backup) {
-        ctx.log.set(Subsystem::Project, Health::Warning, "SLOT%d damaged: loaded .BAK", slot_);
-        ctx.toast("SLOT%d was damaged: recovered the previous save", slot_);
+        if (slot == slotstore::kAutosaveSlot) {
+            ctx.log.set(Subsystem::Project, Health::Warning, "autosave interrupted: loaded its .BAK");
+            ctx.toast("The autosave was interrupted: recovered the previous autosave");
+        } else {
+            ctx.log.set(Subsystem::Project, Health::Warning, "SLOT%d damaged: loaded .BAK", slot);
+            ctx.toast("SLOT%d was damaged: recovered the previous save", slot);
+        }
+    } else if (slot == slotstore::kAutosaveSlot) {
+        ctx.log.set(Subsystem::Project, Health::Ok, "recovered the autosave");
+        ctx.toast("Recovered the autosave. Save it into a slot to keep it.");
     } else {
-        ctx.log.set(Subsystem::Project, Health::Ok, "loaded SLOT%d", slot_);
-        ctx.toast("Loaded SLOT%d (samples load in the background)", slot_);
+        ctx.log.set(Subsystem::Project, Health::Ok, "loaded SLOT%d", slot);
+        ctx.toast("Loaded SLOT%d (samples load in the background)", slot);
     }
 }
 
@@ -195,6 +263,10 @@ void ProjectView::activate(int row, UiContext& ctx)
     Session& s = ctx.session;
     const int tone = (int)drumsynth::Kind::TestTone;
     switch (row) {
+    case RowMetronome:
+        s.setMetronome(!s.metronome());
+        ctx.toast(s.metronome() ? "Metronome on (not rendered into exports)" : "Metronome off");
+        break;
     case RowName:
         nameEdit_ = true;
         nameCursor_ = 0;
@@ -213,7 +285,16 @@ void ProjectView::activate(int row, UiContext& ctx)
         save(ctx);
         break;
     case RowLoad:
-        load(ctx);
+        load(ctx, slot_);
+        break;
+    case RowExport:
+        exportWav(ctx);
+        break;
+    case RowRecover:
+        if (autoInfoValid_ && autoInfo_.exists && !autoInfo_.corrupt)
+            load(ctx, slotstore::kAutosaveSlot);
+        else
+            ctx.toast("No autosave on the drive");
         break;
     case RowNew:
         if (!confirmNew_) {
@@ -292,6 +373,8 @@ void ProjectView::draw(Gfx& g, UiContext& ctx)
     char v[RowCount][28];
     snprintf(v[RowName], 28, "%.23s%s", p.name, nameEdit_ ? "_" : "");
     snprintf(v[RowTempo], 28, "%lu.%02lu BPM", (unsigned long)(p.bpmCenti / 100), (unsigned long)(p.bpmCenti % 100));
+    snprintf(v[RowSwing], 28, "%d%%", p.swing);
+    snprintf(v[RowMetronome], 28, "%s", ctx.session.metronome() ? "ON" : "off");
     snprintf(v[RowPattern], 28, "%d %.10s", p.currentPattern + 1, p.pattern().name);
     snprintf(v[RowLength], 28, "%d steps", p.pattern().length);
     snprintf(v[RowMaster], 28, "%d%%", p.masterVolume);
@@ -312,18 +395,30 @@ void ProjectView::draw(Gfx& g, UiContext& ctx)
     snprintf(v[RowSave], 28, "%s", ctx.storage.ready() ? G_CROSS : "no USB");
     snprintf(v[RowLoad], 28, "%s", !ctx.storage.ready() ? "no USB" : (confirmLoad_ ? "SURE? " G_CROSS : G_CROSS));
     snprintf(v[RowNew], 28, "%s", confirmNew_ ? "SURE? " G_CROSS : G_CROSS);
+    snprintf(v[RowExport], 28, "%s", !ctx.storage.ready() ? "no USB" : (p.songBars() > 0 ? "song " G_CROSS : "pattern " G_CROSS));
+    if (!ctx.storage.ready())
+        snprintf(v[RowRecover], 28, "no USB");
+    else if (autoInfoValid_ && autoInfo_.exists && !autoInfo_.corrupt)
+        snprintf(v[RowRecover], 28, "%.11s " G_CROSS, autoInfo_.name);
+    else
+        snprintf(v[RowRecover], 28, "none");
     snprintf(v[RowToneSw], 28, G_CROSS);
     snprintf(v[RowToneSpu], 28, "%s", ctx.audio.stats().spuSounds ? G_CROSS : "n/a");
     snprintf(v[RowOverlay], 28, "%s", ctx.debugOverlay ? "ON" : "off");
     snprintf(v[RowClearError], 28, "%s", ctx.log.hasError() ? G_CROSS : "-");
 
     static const char* const kNames[RowCount] = {
-        "Name", "Tempo", "Pattern", "Length", "Master vol", "Latency", "File slot", "Missing samples", "Save to USB", "Load from USB",
-        "New (demo)", "Test tone SW", "Test tone SPU2", "Debug overlay", "Clear error",
+        "Name", "Tempo", "Swing", "Metronome", "Pattern", "Length", "Master vol", "Latency", "File slot", "Missing samples", "Save to USB", "Load from USB",
+        "New (demo)", "Export WAV", "Recover autosave", "Test tone SW", "Test tone SPU2", "Debug overlay", "Clear error",
     };
-    for (int r = 0; r < RowCount; ++r) {
-        const int y = kListY + r * kRowH;
-        ui::listRow(g, x + 4, y, 292, kRowH - 2, r == row_);
+    constexpr int kVisible = 17;
+    if (row_ < scroll_)
+        scroll_ = row_;
+    if (row_ >= scroll_ + kVisible)
+        scroll_ = row_ - kVisible + 1;
+    for (int r = scroll_; r < RowCount && r < scroll_ + kVisible; ++r) {
+        const int y = kListY + (r - scroll_) * kRowH;
+        ui::listRow(g, x + 4, y, 292, kRowH - 1, r == row_);
         g.text(kLeftX + 6, y + 1, kNames[r], r == row_ ? theme::kText : theme::kTextDim, 1, 2);
         g.text(kLeftX + 138, y + 1, v[r], r == row_ ? theme::kAccent : theme::kText, 1, 2);
     }

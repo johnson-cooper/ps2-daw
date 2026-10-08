@@ -1,5 +1,6 @@
 #include "project/session.hpp"
 
+#include <stdio.h>
 #include <string.h>
 
 #include "audio/sample_ref.hpp"
@@ -48,6 +49,8 @@ void Session::loadProject(const Project& p)
     for (auto& c : project_.channels)
         if (c.sampleSlot < 0 || !bank_.get(c.sampleSlot))
             c.sampleSlot = (int8_t)resolveSample(c);
+    for (int i = 0; i < cfg::kMaxAudioSources; ++i)
+        project_.audioSlot[i] = (int8_t)(project_.audioRefs[i][0] ? bank_.findByRef(project_.audioRefs[i]) : -1);
     ++loadSerial_;
     syncAll();
 }
@@ -57,7 +60,11 @@ void Session::syncAll()
     const Project& p = project_;
     post(CmdType::SetBpm, 0, 0, 0, (int32_t)p.bpmCenti);
     post(CmdType::SetMasterVolume, 0, 0, 0, p.masterVolume);
-    for (int ch = 0; ch < cfg::kMaxChannels; ++ch) {
+    post(CmdType::SetSwing, 0, 0, 0, p.swing * cfg::kTicksPerStep / 100);
+    post(CmdType::SetMetronome, 0, 0, 0, metronome_ ? 1 : 0);
+    // Only active rack rows are synced (spare rows are re-synced when added), which keeps a
+    // project load well inside the command queue.
+    for (int ch = 0; ch < p.channelCount; ++ch) {
         const ChannelData& c = p.channels[ch];
         post(CmdType::SetChannelSample, ch, 0, 0, c.sampleSlot);
         post(CmdType::SetChannelVolume, ch, 0, 0, c.volume);
@@ -77,7 +84,13 @@ void Session::syncAll()
     }
     syncClips();
     syncTrackMask();
-    for (int ch = 0; ch < cfg::kMaxChannels; ++ch)
+    syncMixer();
+    for (int ch = 0; ch < p.channelCount; ++ch) {
+        syncInstrument(ch);
+        post(CmdType::SetChannelRoute, ch, 0, 0, p.channels[ch].route);
+    }
+    syncAudioClips();
+    for (int ch = 0; ch < p.channelCount; ++ch)
         post(CmdType::SetChannelGate, ch, 0, 0, p.channels[ch].gate);
     for (int pi = 0; pi < cfg::kMaxPatterns; ++pi)
         for (int ch = 0; ch < cfg::kMaxChannels; ++ch)
@@ -96,8 +109,12 @@ void Session::syncNotes(int pattern, int channel)
 {
     const PatternData& pd = project_.patterns[pattern];
     const int n = pd.noteCount[channel] > cfg::kMaxNotes ? cfg::kMaxNotes : pd.noteCount[channel];
-    for (int i = 0; i < n; ++i)
-        post(CmdType::SetNote, pattern, channel, i, packNote(pd.notes[channel][i]));
+    for (int i = 0; i < n; ++i) {
+        const PianoNote& nt = pd.notes[channel][i];
+        post(CmdType::SetNote, pattern, channel, i, packNote(nt));
+        if (nt.tick || nt.lenTicks) // sub-step timing (SetNote resets it to whole steps)
+            post(CmdType::SetNoteFine, pattern, channel, i, (int32_t)((uint32_t)nt.tick | ((uint32_t)nt.lenTicks << 8)));
+    }
     post(CmdType::SetNoteCount, pattern, channel, 0, n);
 }
 
@@ -135,6 +152,38 @@ bool Session::addNote(int pattern, int channel, int step, int pitch, int length,
     pd.notes[channel][idx].pitch = (uint8_t)pitch;
     pd.notes[channel][idx].velocity = (uint8_t)velocity;
     pd.notes[channel][idx].length = (uint8_t)length;
+    syncNotes(pattern, channel);
+    return true;
+}
+
+bool Session::setNotes(int pattern, int channel, const PianoNote* notes, int count)
+{
+    if (!inRange(pattern, cfg::kMaxPatterns) || !inRange(channel, cfg::kMaxChannels) || count < 0 || count > cfg::kMaxNotes ||
+        (count > 0 && !notes))
+        return false;
+    PatternData& pd = project_.patterns[pattern];
+    int kept = 0;
+    PianoNote out[cfg::kMaxNotes];
+    for (int i = 0; i < count; ++i) {
+        PianoNote n = notes[i];
+        if (n.step >= cfg::kMaxSteps || n.pitch > 127)
+            continue;
+        n.velocity = (uint8_t)(n.velocity < 1 ? 1 : (n.velocity > 127 ? 127 : n.velocity));
+        n.length = (uint8_t)(n.length < 1 ? 1 : (n.length > cfg::kMaxSteps ? cfg::kMaxSteps : n.length));
+        if (n.tick >= cfg::kTicksPerStep)
+            n.tick = 0;
+        n.reserved = 0;
+        if (n.lenTicks) { // keep `length` the whole-step ceiling of the exact duration
+            if (n.lenTicks > cfg::kMaxSteps * cfg::kTicksPerStep)
+                n.lenTicks = (uint16_t)(cfg::kMaxSteps * cfg::kTicksPerStep);
+            n.length = (uint8_t)((n.lenTicks + cfg::kTicksPerStep - 1) / cfg::kTicksPerStep);
+        }
+        out[kept++] = n;
+    }
+    memset(pd.notes[channel], 0, sizeof(pd.notes[channel]));
+    for (int i = 0; i < kept; ++i)
+        pd.notes[channel][i] = out[i];
+    pd.noteCount[channel] = (uint8_t)kept;
     syncNotes(pattern, channel);
     return true;
 }
@@ -228,6 +277,8 @@ void Session::syncClips()
     for (int i = 0; i < p.clipCount; ++i) {
         const PlaylistClip& k = p.clips[i];
         post(CmdType::SetClip, i, k.track, k.pattern, (int32_t)(k.startBar | ((uint32_t)k.lengthBars << 16)));
+        if (k.chanMask != kAllChannels && k.chanMask != 0)
+            post(CmdType::SetClipMask, i, 0, 0, k.chanMask);
     }
     post(CmdType::SetClipCount, 0, 0, 0, p.clipCount);
 }
@@ -241,7 +292,7 @@ int Session::patternBars(int pattern) const
     return (steps + perBar - 1) / perBar;
 }
 
-bool Session::placeClip(int track, int startBar, int pattern, int lengthBars)
+bool Session::placeClip(int track, int startBar, int pattern, int lengthBars, uint16_t chanMask)
 {
     if (!inRange(track, cfg::kPlaylistTracks) || !inRange(startBar, cfg::kMaxSongBars) || !inRange(pattern, cfg::kMaxPatterns) ||
         lengthBars < 1)
@@ -260,11 +311,26 @@ bool Session::placeClip(int track, int startBar, int pattern, int lengthBars)
     }
     if (n >= Project::kMaxClips)
         return false; // table full (checked before touching the project)
+    // Audio clips under the new clip are replaced as well.
+    bool audioRemoved = false;
+    for (int i = p.audioClipCount - 1; i >= 0; --i) {
+        const AudioClipData& k = p.audioClips[i];
+        if (k.track == track && startBar < k.startBar + k.lengthBars && k.startBar < startBar + lengthBars) {
+            for (int j = i; j + 1 < p.audioClipCount; ++j)
+                p.audioClips[j] = p.audioClips[j + 1];
+            --p.audioClipCount;
+            memset(&p.audioClips[p.audioClipCount], 0, sizeof(AudioClipData));
+            audioRemoved = true;
+        }
+    }
+    if (audioRemoved)
+        syncAudioClips();
     PlaylistClip nc;
     nc.track = (uint8_t)track;
     nc.pattern = (uint8_t)pattern;
     nc.startBar = (uint16_t)startBar;
     nc.lengthBars = (uint16_t)lengthBars;
+    nc.chanMask = chanMask ? chanMask : kAllChannels;
     kept[n++] = nc;
     memcpy(p.clips, kept, sizeof(PlaylistClip) * (size_t)n);
     p.clipCount = (uint16_t)n;
@@ -343,6 +409,19 @@ void Session::togglePlayPause()
         pause();
     else
         play();
+}
+
+void Session::setSwing(int percent)
+{
+    percent = percent < 0 ? 0 : (percent > 50 ? 50 : percent);
+    project_.swing = (uint8_t)percent;
+    post(CmdType::SetSwing, 0, 0, 0, percent * cfg::kTicksPerStep / 100);
+}
+
+void Session::setMetronome(bool on)
+{
+    metronome_ = on;
+    post(CmdType::SetMetronome, 0, 0, 0, on ? 1 : 0);
 }
 
 void Session::setBpmCenti(int bpmCenti)
@@ -574,6 +653,20 @@ int Session::bindSamples()
         if (s && s->hwOnly && c.voiceMode != (uint8_t)VoiceMode::Spu2)
             setVoiceMode(ch, VoiceMode::Spu2);
     }
+    bool audioChanged = false;
+    for (int i = 0; i < cfg::kMaxAudioSources; ++i) {
+        if (!project_.audioRefs[i][0])
+            continue;
+        const int slot = bank_.findByRef(project_.audioRefs[i]);
+        if (slot != project_.audioSlot[i]) {
+            project_.audioSlot[i] = (int8_t)slot;
+            audioChanged = true;
+        }
+        if (slot < 0)
+            ++unresolved;
+    }
+    if (audioChanged)
+        syncAudioClips();
     return unresolved;
 }
 
@@ -581,6 +674,9 @@ bool Session::slotInUse(int slot) const
 {
     for (int ch = 0; ch < cfg::kMaxChannels; ++ch)
         if (project_.channels[ch].sampleSlot == slot)
+            return true;
+    for (int i = 0; i < project_.audioClipCount; ++i)
+        if (project_.audioSlot[project_.audioClips[i].source] == slot)
             return true;
     return false;
 }
@@ -650,4 +746,566 @@ void Session::previewSample(int slot, VoiceMode mode)
 void Session::setSampleHwReady(int slot, bool ready)
 {
     post(CmdType::SetSampleHwReady, ready ? 1 : 0, 0, 0, slot);
+}
+
+// ---------------------------------------------------------------------------
+// Mixer routing, effects, instruments, audio clips
+// ---------------------------------------------------------------------------
+
+void Session::syncInstrument(int channel)
+{
+    const InstrumentData& in = project_.channels[channel].inst;
+    post(CmdType::SetChannelKind, channel, 0, 0, in.kind);
+    for (int i = 0; i < cfg::kEnvParams; ++i)
+        post(CmdType::SetEnvParam, channel, i, 0, in.env[i]);
+    for (int i = 0; i < instr::synthParamCount(); ++i)
+        post(CmdType::SetSynthParam, channel, i, 0, in.synth[i]);
+}
+
+void Session::postFx(int track, int slot)
+{
+    const FxData& f = project_.tracks[track].fx[slot];
+    post(CmdType::SetFxType, track, slot, 0, f.type);
+    const int n = fx::paramCount((FxType)f.type);
+    for (int i = 0; i < n; ++i)
+        post(CmdType::SetFxParam, track, slot, i, f.p[i]);
+    post(CmdType::SetFxBypass, track, slot, 0, f.bypass);
+}
+
+void Session::syncMixer()
+{
+    for (int t = 0; t < cfg::kMixBuses; ++t) {
+        const MixerTrackData& m = project_.tracks[t];
+        if (t > 0) {
+            post(CmdType::SetTrackParam, t, 0, 0, m.volume);
+            post(CmdType::SetTrackParam, t, 1, 0, m.pan);
+            post(CmdType::SetTrackParam, t, 2, 0, m.mute);
+            post(CmdType::SetTrackParam, t, 3, 0, m.solo);
+        }
+        for (int s = 0; s < cfg::kFxSlots; ++s)
+            postFx(t, s);
+    }
+}
+
+void Session::setRoute(int channel, int track)
+{
+    if (!inRange(channel, cfg::kMaxChannels) || !inRange(track, cfg::kMixBuses))
+        return;
+    project_.channels[channel].route = (uint8_t)track;
+    post(CmdType::SetChannelRoute, channel, 0, 0, track);
+}
+
+void Session::setMixVolume(int track, int volume)
+{
+    if (!inRange(track, cfg::kMixBuses) || track == 0)
+        return;
+    volume = volume < 0 ? 0 : (volume > 100 ? 100 : volume);
+    project_.tracks[track].volume = (uint8_t)volume;
+    post(CmdType::SetTrackParam, track, 0, 0, volume);
+}
+
+void Session::setMixPan(int track, int pan)
+{
+    if (!inRange(track, cfg::kMixBuses) || track == 0)
+        return;
+    pan = pan < -100 ? -100 : (pan > 100 ? 100 : pan);
+    project_.tracks[track].pan = (int8_t)pan;
+    post(CmdType::SetTrackParam, track, 1, 0, pan);
+}
+
+void Session::setMixMute(int track, bool mute)
+{
+    if (!inRange(track, cfg::kMixBuses) || track == 0)
+        return;
+    project_.tracks[track].mute = mute ? 1 : 0;
+    post(CmdType::SetTrackParam, track, 2, 0, mute ? 1 : 0);
+}
+
+void Session::setMixSolo(int track, bool solo)
+{
+    if (!inRange(track, cfg::kMixBuses) || track == 0)
+        return;
+    project_.tracks[track].solo = solo ? 1 : 0;
+    post(CmdType::SetTrackParam, track, 3, 0, solo ? 1 : 0);
+}
+
+void Session::setMixerTrackName(int track, const char* name)
+{
+    if (!inRange(track, cfg::kMixBuses) || !name)
+        return;
+    str::copy(project_.tracks[track].name, sizeof(project_.tracks[track].name), name);
+}
+
+void Session::clearClipLatch() { post(CmdType::ClearClipLatch); }
+
+void Session::setFxType(int track, int slot, FxType type)
+{
+    if (!inRange(track, cfg::kMixBuses) || !inRange(slot, cfg::kFxSlots) || (int)type >= kFxTypeCount)
+        return;
+    fx::setDefaults(project_.tracks[track].fx[slot], type);
+    postFx(track, slot);
+}
+
+void Session::setFxParam(int track, int slot, int index, int value)
+{
+    if (!inRange(track, cfg::kMixBuses) || !inRange(slot, cfg::kFxSlots))
+        return;
+    FxData& f = project_.tracks[track].fx[slot];
+    if (!inRange(index, fx::paramCount((FxType)f.type)))
+        return;
+    f.p[index] = (int16_t)params::clampTo(fx::param((FxType)f.type, index), value);
+    post(CmdType::SetFxParam, track, slot, index, f.p[index]);
+}
+
+void Session::setFxBypass(int track, int slot, bool bypass)
+{
+    if (!inRange(track, cfg::kMixBuses) || !inRange(slot, cfg::kFxSlots))
+        return;
+    project_.tracks[track].fx[slot].bypass = bypass ? 1 : 0;
+    post(CmdType::SetFxBypass, track, slot, 0, bypass ? 1 : 0);
+}
+
+bool Session::moveFx(int track, int slot, int dir)
+{
+    const int other = slot + dir;
+    if (!inRange(track, cfg::kMixBuses) || !inRange(slot, cfg::kFxSlots) || !inRange(other, cfg::kFxSlots))
+        return false;
+    FxData tmp = project_.tracks[track].fx[slot];
+    project_.tracks[track].fx[slot] = project_.tracks[track].fx[other];
+    project_.tracks[track].fx[other] = tmp;
+    postFx(track, slot);
+    postFx(track, other);
+    return true;
+}
+
+void Session::setChannelKind(int channel, InstrKind kind)
+{
+    if (!inRange(channel, cfg::kMaxChannels))
+        return;
+    project_.channels[channel].inst.kind = (uint8_t)kind;
+    post(CmdType::SetChannelKind, channel, 0, 0, (int)kind);
+    if (kind == InstrKind::Synth) // synth notes always have a length
+        setChannelGate(channel, true);
+}
+
+void Session::setEnvParam(int channel, int index, int value)
+{
+    if (!inRange(channel, cfg::kMaxChannels) || !inRange(index, cfg::kEnvParams))
+        return;
+    InstrumentData& in = project_.channels[channel].inst;
+    in.env[index] = (int16_t)params::clampTo(instr::envParam(index), value);
+    post(CmdType::SetEnvParam, channel, index, 0, in.env[index]);
+}
+
+void Session::setSynthParam(int channel, int index, int value)
+{
+    if (!inRange(channel, cfg::kMaxChannels) || !inRange(index, instr::synthParamCount()))
+        return;
+    InstrumentData& in = project_.channels[channel].inst;
+    in.synth[index] = (int16_t)params::clampTo(instr::synthParam(index), value);
+    post(CmdType::SetSynthParam, channel, index, 0, in.synth[index]);
+}
+
+void Session::applySynthPreset(int channel, int preset)
+{
+    if (!inRange(channel, cfg::kMaxChannels))
+        return;
+    instr::applySynthPreset(project_.channels[channel].inst, preset);
+    str::copy(project_.channels[channel].name, sizeof(project_.channels[channel].name), instr::synthPreset(preset).name);
+    syncInstrument(channel);
+    setChannelKind(channel, InstrKind::Synth);
+}
+
+void Session::applyEnvPreset(int channel, int preset)
+{
+    if (!inRange(channel, cfg::kMaxChannels))
+        return;
+    instr::applyEnvPreset(project_.channels[channel].inst, preset);
+    for (int i = 0; i < cfg::kEnvParams; ++i)
+        post(CmdType::SetEnvParam, channel, i, 0, project_.channels[channel].inst.env[i]);
+}
+
+// ---- audio clips ----
+
+int Session::audioClipSlot(int index) const
+{
+    if (!inRange(index, project_.audioClipCount))
+        return -1;
+    return project_.audioSlot[project_.audioClips[index].source];
+}
+
+void Session::syncAudioClip(int i)
+{
+    const AudioClipData& k = project_.audioClips[i];
+    const int slot = project_.audioSlot[k.source];
+    post(CmdType::SetAudioClip, i, k.track, slot >= 0 ? slot : 0xff, (int32_t)(k.startBar | ((uint32_t)k.lengthBars << 16)));
+    post(CmdType::SetAudioClipMix, i, k.volume * 127 / 100, (k.loop ? 1 : 0) | (k.route << 1), 0);
+    post(CmdType::SetAudioClipTrim, i, 0, 0, (int32_t)k.trimStart);
+    post(CmdType::SetAudioClipTrim, i, 1, 0, (int32_t)k.trimEnd);
+}
+
+void Session::syncAudioClips()
+{
+    for (int i = 0; i < project_.audioClipCount; ++i)
+        syncAudioClip(i);
+    post(CmdType::SetAudioClipCount, 0, 0, 0, project_.audioClipCount);
+}
+
+int Session::audioSourceFor(const Sample& s)
+{
+    Project& p = project_;
+    for (int i = 0; i < cfg::kMaxAudioSources; ++i)
+        if (p.audioRefs[i][0] && strcmp(p.audioRefs[i], s.ref) == 0)
+            return i;
+    // Free entry: empty, or not used by any clip.
+    for (int i = 0; i < cfg::kMaxAudioSources; ++i) {
+        bool used = false;
+        for (int k = 0; k < p.audioClipCount; ++k)
+            used |= p.audioClips[k].source == i;
+        if (!p.audioRefs[i][0] || !used) {
+            str::copy(p.audioRefs[i], sizeof(p.audioRefs[i]), s.ref);
+            p.audioSlot[i] = -1;
+            return i;
+        }
+    }
+    return -1;
+}
+
+int Session::placeAudioClip(int track, int startBar, int sampleSlot, int lengthBars)
+{
+    Project& p = project_;
+    const Sample* s = bank_.get(sampleSlot);
+    if (!s || s->hwOnly || !s->data || !inRange(track, cfg::kPlaylistTracks) || !inRange(startBar, cfg::kMaxSongBars) ||
+        p.audioClipCount >= cfg::kMaxAudioClips)
+        return -1;
+    if (lengthBars < 1) {
+        // beats = seconds * bpm / 60; 4 beats per bar
+        const uint64_t num = (uint64_t)s->frames * p.bpmCenti;
+        const uint64_t den = (uint64_t)(s->sampleRate ? s->sampleRate : 48000) * 6000ull * cfg::kBeatsPerBar;
+        lengthBars = (int)((num + den - 1) / den);
+        if (lengthBars < 1)
+            lengthBars = 1;
+        if (lengthBars > 32)
+            lengthBars = 32;
+    }
+    if (startBar + lengthBars > cfg::kMaxSongBars)
+        lengthBars = cfg::kMaxSongBars - startBar;
+    if (!p.trackFree(track, startBar, lengthBars))
+        return -1;
+    const int src = audioSourceFor(*s);
+    if (src < 0)
+        return -1;
+    p.audioSlot[src] = (int8_t)sampleSlot;
+    const int i = p.audioClipCount++;
+    AudioClipData& k = p.audioClips[i];
+    memset(&k, 0, sizeof(k));
+    k.track = (uint8_t)track;
+    k.source = (uint8_t)src;
+    k.startBar = (uint16_t)startBar;
+    k.lengthBars = (uint16_t)lengthBars;
+    k.volume = 100;
+    syncAudioClip(i);
+    post(CmdType::SetAudioClipCount, 0, 0, 0, p.audioClipCount);
+    return i;
+}
+
+bool Session::removeAudioClip(int index)
+{
+    Project& p = project_;
+    if (!inRange(index, p.audioClipCount))
+        return false;
+    for (int i = index; i + 1 < p.audioClipCount; ++i)
+        p.audioClips[i] = p.audioClips[i + 1];
+    --p.audioClipCount;
+    memset(&p.audioClips[p.audioClipCount], 0, sizeof(AudioClipData));
+    syncAudioClips();
+    return true;
+}
+
+bool Session::moveAudioClip(int index, int track, int startBar)
+{
+    Project& p = project_;
+    if (!inRange(index, p.audioClipCount) || !inRange(track, cfg::kPlaylistTracks) || !inRange(startBar, cfg::kMaxSongBars))
+        return false;
+    AudioClipData& k = p.audioClips[index];
+    int len = k.lengthBars;
+    if (startBar + len > cfg::kMaxSongBars)
+        return false;
+    if (!p.trackFree(track, startBar, len, -1, index))
+        return false;
+    k.track = (uint8_t)track;
+    k.startBar = (uint16_t)startBar;
+    syncAudioClip(index);
+    return true;
+}
+
+int Session::duplicateAudioClip(int index)
+{
+    Project& p = project_;
+    if (!inRange(index, p.audioClipCount) || p.audioClipCount >= cfg::kMaxAudioClips)
+        return -1;
+    const AudioClipData src = p.audioClips[index];
+    // Right after the original; if that spot is taken, the first free spot on the track.
+    for (int start = src.startBar + src.lengthBars; start + src.lengthBars <= cfg::kMaxSongBars; ++start) {
+        if (!p.trackFree(src.track, start, src.lengthBars))
+            continue;
+        const int i = p.audioClipCount++;
+        p.audioClips[i] = src;
+        p.audioClips[i].startBar = (uint16_t)start;
+        syncAudioClip(i);
+        post(CmdType::SetAudioClipCount, 0, 0, 0, p.audioClipCount);
+        return i;
+    }
+    return -1;
+}
+
+int Session::setAudioClipLength(int index, int lengthBars)
+{
+    Project& p = project_;
+    if (!inRange(index, p.audioClipCount))
+        return 0;
+    AudioClipData& k = p.audioClips[index];
+    if (lengthBars < 1)
+        lengthBars = 1;
+    if (k.startBar + lengthBars > cfg::kMaxSongBars)
+        lengthBars = cfg::kMaxSongBars - k.startBar;
+    while (lengthBars > k.lengthBars && !p.trackFree(k.track, k.startBar, lengthBars, -1, index))
+        --lengthBars;
+    k.lengthBars = (uint16_t)lengthBars;
+    syncAudioClip(index);
+    return lengthBars;
+}
+
+bool Session::setAudioClipTrim(int index, uint32_t startFrames, uint32_t endFrames)
+{
+    Project& p = project_;
+    if (!inRange(index, p.audioClipCount))
+        return false;
+    AudioClipData& k = p.audioClips[index];
+    const Sample* s = bank_.get(p.audioSlot[k.source]);
+    const uint32_t total = s ? s->frames : 0xffffffffu;
+    if (endFrames > total)
+        endFrames = total;
+    if (startFrames >= total)
+        startFrames = total ? total - 1 : 0;
+    if (endFrames && endFrames <= startFrames)
+        endFrames = 0;
+    if (s && endFrames == total)
+        endFrames = 0; // the whole sample: stored as "to the end"
+    k.trimStart = startFrames;
+    k.trimEnd = endFrames;
+    post(CmdType::SetAudioClipTrim, index, 0, 0, (int32_t)k.trimStart);
+    post(CmdType::SetAudioClipTrim, index, 1, 0, (int32_t)k.trimEnd);
+    return true;
+}
+
+void Session::setAudioClipVolume(int index, int volume)
+{
+    if (!inRange(index, project_.audioClipCount))
+        return;
+    project_.audioClips[index].volume = (uint8_t)(volume < 0 ? 0 : (volume > 100 ? 100 : volume));
+    syncAudioClip(index);
+}
+
+void Session::setAudioClipLoop(int index, bool loop)
+{
+    if (!inRange(index, project_.audioClipCount))
+        return;
+    project_.audioClips[index].loop = loop ? 1 : 0;
+    syncAudioClip(index);
+}
+
+void Session::setAudioClipRoute(int index, int track)
+{
+    if (!inRange(index, project_.audioClipCount) || !inRange(track, cfg::kMixBuses))
+        return;
+    project_.audioClips[index].route = (uint8_t)track;
+    syncAudioClip(index);
+}
+
+void Session::setPlaylistTrackName(int track, const char* name)
+{
+    if (!inRange(track, cfg::kPlaylistTracks) || !name)
+        return;
+    str::copy(project_.playlistTrackName[track], sizeof(project_.playlistTrackName[track]), name);
+}
+
+void Session::setExportMode(int passes)
+{
+    post(CmdType::SetExportMode, 0, 0, 0, passes < 0 ? 0 : passes);
+}
+
+// ---- rack channels ----
+
+void Session::syncChannel(int ch)
+{
+    const ChannelData& c = project_.channels[ch];
+    post(CmdType::SetChannelSample, ch, 0, 0, c.sampleSlot);
+    post(CmdType::SetChannelVolume, ch, 0, 0, c.volume);
+    post(CmdType::SetChannelPan, ch, 0, 0, c.pan);
+    post(CmdType::SetChannelMute, ch, 0, 0, c.mute);
+    post(CmdType::SetChannelSolo, ch, 0, 0, c.solo);
+    post(CmdType::SetChannelVoiceMode, ch, 0, 0, c.voiceMode);
+    syncInstrument(ch);
+    post(CmdType::SetChannelRoute, ch, 0, 0, c.route);
+    post(CmdType::SetChannelGate, ch, 0, 0, c.gate);
+}
+
+int Session::addChannel(bool synth)
+{
+    Project& p = project_;
+    if (p.channelCount >= cfg::kMaxChannels)
+        return -1;
+    const int ch = p.channelCount;
+    ChannelData& c = p.channels[ch];
+    memset(&c, 0, sizeof(c));
+    snprintf(c.name, sizeof(c.name), "CH%d", ch + 1);
+    c.sampleSlot = -1;
+    c.volume = 78;
+    instr::setDefaults(c.inst);
+    // A new row starts empty in every pattern.
+    for (auto& pd : p.patterns) {
+        memset(pd.velocity[ch], 0, sizeof(pd.velocity[ch]));
+        memset(pd.notes[ch], 0, sizeof(pd.notes[ch]));
+        pd.noteCount[ch] = 0;
+    }
+    ++p.channelCount;
+    // (the engine's grid for a spare row is already empty: syncAll and removeChannel clear it)
+    if (synth) {
+        instr::applySynthPreset(c.inst, 0);
+        c.inst.kind = (uint8_t)InstrKind::Synth;
+        c.gate = 1;
+        str::copy(c.name, sizeof(c.name), "SYNTH");
+        syncChannel(ch);
+    } else {
+        // first loaded sample, so the new row makes a sound straight away
+        for (int slot = 0; slot < cfg::kMaxSamples; ++slot)
+            if (bank_.get(slot)) {
+                syncChannel(ch);
+                setSample(ch, slot);
+                return ch;
+            }
+        syncChannel(ch);
+    }
+    return ch;
+}
+
+bool Session::removeChannel(int ch)
+{
+    Project& p = project_;
+    if (!inRange(ch, p.channelCount) || p.channelCount <= 1)
+        return false;
+    for (int i = ch; i + 1 < p.channelCount; ++i)
+        p.channels[i] = p.channels[i + 1];
+    for (auto& pd : p.patterns) {
+        for (int i = ch; i + 1 < p.channelCount; ++i) {
+            memcpy(pd.velocity[i], pd.velocity[i + 1], sizeof(pd.velocity[i]));
+            memcpy(pd.notes[i], pd.notes[i + 1], sizeof(pd.notes[i]));
+            pd.noteCount[i] = pd.noteCount[i + 1];
+        }
+        const int last = p.channelCount - 1;
+        memset(pd.velocity[last], 0, sizeof(pd.velocity[last]));
+        memset(pd.notes[last], 0, sizeof(pd.notes[last]));
+        pd.noteCount[last] = 0;
+    }
+    const int last = p.channelCount - 1;
+    memset(&p.channels[last], 0, sizeof(ChannelData));
+    snprintf(p.channels[last].name, sizeof(p.channels[last].name), "CH%d", last + 1);
+    p.channels[last].sampleSlot = -1;
+    p.channels[last].volume = 78;
+    instr::setDefaults(p.channels[last].inst);
+    --p.channelCount;
+    loadProject(p); // the engine learns the new layout in one consistent sweep
+    return true;
+}
+
+// ---- ungrouping pattern clips ----
+
+bool Session::channelHasContent(int pattern, int channel) const
+{
+    if (!inRange(pattern, cfg::kMaxPatterns) || !inRange(channel, cfg::kMaxChannels))
+        return false;
+    const PatternData& pd = project_.patterns[pattern];
+    if (pd.noteCount[channel])
+        return true;
+    for (int s = 0; s < cfg::kMaxSteps; ++s)
+        if (pd.velocity[channel][s])
+            return true;
+    return false;
+}
+
+void Session::setClipMask(int index, uint16_t mask)
+{
+    if (!inRange(index, project_.clipCount))
+        return;
+    project_.clips[index].chanMask = mask ? mask : kAllChannels;
+    syncClips();
+}
+
+// Appends a clip like `base` that plays only `mask` on `track`.
+static bool appendMaskedClip(Project& p, const PlaylistClip& base, int track, uint16_t mask)
+{
+    if (p.clipCount >= Project::kMaxClips)
+        return false;
+    PlaylistClip nc = base;
+    nc.track = (uint8_t)track;
+    nc.chanMask = mask;
+    p.clips[p.clipCount++] = nc;
+    return true;
+}
+
+static int firstFreeTrack(const Project& p, int exceptTrack, int start, int len)
+{
+    for (int t = 0; t < cfg::kPlaylistTracks; ++t)
+        if (t != exceptTrack && p.trackFree(t, start, len))
+            return t;
+    return -1;
+}
+
+bool Session::splitClipChannel(int index, int channel)
+{
+    Project& p = project_;
+    if (!inRange(index, p.clipCount) || !inRange(channel, cfg::kMaxChannels))
+        return false;
+    const PlaylistClip base = p.clips[index];
+    const uint16_t bit = (uint16_t)(1u << channel);
+    if (!(base.chanMask & bit) || (base.chanMask & ~bit) == 0)
+        return false;
+    const int t = firstFreeTrack(p, base.track, base.startBar, base.lengthBars);
+    if (t < 0 || !appendMaskedClip(p, base, t, bit))
+        return false;
+    p.clips[index].chanMask = (uint16_t)(base.chanMask & ~bit);
+    p.sanitizeClips(); // keeps the table sorted (indices change)
+    syncClips();
+    return true;
+}
+
+int Session::ungroupClip(int index)
+{
+    Project& p = project_;
+    if (!inRange(index, p.clipCount))
+        return 0;
+    const PlaylistClip base = p.clips[index];
+    int made = 0;
+    uint16_t moved = 0;
+    bool keptFirst = false;
+    for (int ch = 0; ch < cfg::kMaxChannels; ++ch) {
+        if (!((base.chanMask >> ch) & 1) || !channelHasContent(base.pattern, ch))
+            continue;
+        if (!keptFirst) { // the first instrument stays in the original clip
+            keptFirst = true;
+            continue;
+        }
+        const int t = firstFreeTrack(p, base.track, base.startBar, base.lengthBars);
+        if (t < 0 || !appendMaskedClip(p, base, t, (uint16_t)(1u << ch)))
+            break;
+        moved |= (uint16_t)(1u << ch);
+        ++made;
+    }
+    if (made) {
+        p.clips[index].chanMask = (uint16_t)(base.chanMask & ~moved);
+        p.sanitizeClips();
+        syncClips();
+    }
+    return made;
 }

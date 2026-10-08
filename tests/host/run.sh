@@ -18,11 +18,11 @@ if ! $CXX $SAN tests/host/out/san_probe.cpp -o tests/host/out/san_probe >/dev/nu
 fi
 FLAGS="-std=gnu++17 -O1 -g -Wall -Wextra -Wno-unused-parameter $SAN -Isrc"
 CORE="src/core/strutil.cpp src/core/status_log.cpp \
-      src/audio/transport.cpp src/audio/mixer.cpp src/audio/audio_engine.cpp \
+      src/audio/transport.cpp src/audio/params.cpp src/audio/fx.cpp src/audio/instrument.cpp src/audio/mixer.cpp src/audio/audio_engine.cpp src/audio/wav_export.cpp \
       src/audio/sample.cpp src/audio/drum_synth.cpp src/audio/wav.cpp src/audio/adpcm.cpp src/audio/sample_ref.cpp src/audio/sample_import.cpp src/audio/pitch.cpp \
-      src/project/project.cpp src/project/project_io.cpp src/project/session.cpp src/project/sample_library.cpp src/project/slot_store.cpp"
+      src/project/note_edit.cpp src/project/project.cpp src/project/project_io.cpp src/project/session.cpp src/project/sample_library.cpp src/project/slot_store.cpp"
 
-$CXX $FLAGS tests/host/test_main.cpp tests/host/test_samples.cpp tests/host/test_workflow.cpp $CORE -lm -o tests/host/out/core_tests
+$CXX $FLAGS tests/host/test_main.cpp tests/host/test_samples.cpp tests/host/test_workflow.cpp tests/host/test_audio.cpp tests/host/test_noteedit.cpp src/ui/waveform.cpp $CORE -lm -o tests/host/out/core_tests
 ./tests/host/out/core_tests
 
 if [ "$1" = "preview" ]; then

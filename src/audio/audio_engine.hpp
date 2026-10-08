@@ -67,6 +67,19 @@ struct EngineStatus {
     volatile uint32_t commands = 0;
     volatile uint32_t hwTriggers = 0;
     volatile uint32_t hwDropped = 0;
+
+    // Mixer buses: index 0 is the master, 1..8 the inserts. Post-fader peaks.
+    volatile uint16_t busMeterL[cfg::kMixBuses] = {};
+    volatile uint16_t busMeterR[cfg::kMixBuses] = {};
+    volatile uint8_t busClip[cfg::kMixBuses] = {};
+    volatile int16_t busGr[cfg::kMixBuses] = {};   // compressor gain reduction, tenths of a dB
+    volatile uint8_t fxStarved = 0;                // bit n set: a delay/reverb found no memory (any bus)
+    volatile uint8_t exportDone = 0;               // the one-shot pass finished (export mode)
+    volatile uint32_t exportSkipped = 0;           // notes that could not be rendered (SPU2-only samples)
+    volatile uint32_t audioClipsPlayed = 0;
+
+    // Smoothed per-block timings in microseconds (only when a profile clock is set).
+    volatile uint32_t profCommandsUs = 0, profVoicesUs = 0, profFxUs = 0, profFinishUs = 0;
 };
 
 class AudioEngine {
@@ -74,6 +87,12 @@ public:
     AudioEngine();
 
     void setSampleBank(const SampleBank* bank) { bank_ = bank; }
+    // Optional profiling clock in microseconds (see EngineStatus::prof*).
+    void setProfileClock(uint64_t (*clock)())
+    {
+        clock_ = clock;
+        mixer_.setClock(clock);
+    }
 
     // UI thread. Returns false if the queue is full (caller may retry).
     bool post(const Command& cmd) { return queue_.push(cmd); }
@@ -96,12 +115,18 @@ private:
     void apply(const Command& c);
     void fireStep(int step, uint32_t frameInBlock);
     void fireSongStep(int songStep, uint32_t frameInBlock);
-    bool songActive() const { return songMode_ && clipCount_ > 0 && songSteps_ > 0; }
+    bool songActive() const { return songMode_ && (clipCount_ > 0 || aclipCount_ > 0) && songSteps_ > 0; }
     void recomputeSong();
-    void triggerChannel(int ch, int velocity, uint32_t frameInBlock, int semis = 0, int gateSteps = 0);
-    void fireNotes(int pattern, int localStep, uint32_t frameInBlock);
+    void triggerChannel(int ch, int velocity, uint32_t frameInBlock, int semis = 0, int gateTicks = 0);
+    void fireNotes(int pattern, int localStep, uint32_t frameInBlock, uint16_t mask = 0xffff);
     bool trackAudible(int track) const;
-    bool triggerSample(int ch, int sampleSlot, int velocity, VoiceMode mode, uint32_t frameInBlock, int semis = 0, int gateSteps = 0);
+    bool triggerSample(int ch, int sampleSlot, int velocity, VoiceMode mode, uint32_t frameInBlock, int semis = 0, int gateTicks = 0);
+    uint32_t framesForSteps(int steps) const;
+    uint32_t framesForTicks(int ticks) const;
+    void firePending(uint32_t absFrame, uint32_t frameInBlock);
+    void queueNote(int ch, int velocity, uint32_t dueFrame, int semis, int gateTicks);
+    void triggerAudioClips(int songStep, uint32_t frameInBlock);
+    void playAudioClip(int index, int elapsedSteps, uint32_t frameInBlock);
     void publish();
 
     SpscQueue<Command, 1024> queue_;
@@ -119,6 +144,7 @@ private:
 
     HwTrigger hw_[kMaxHwPerBlock];
     int hwCount_;
+    uint64_t (*clock_)() = nullptr;
     uint32_t blockStart_;
     int queuedPattern_;     // -1 = none
     int queuedQuantum_;     // steps between allowed switch points
@@ -126,9 +152,34 @@ private:
     struct Clip {
         uint8_t track, pattern;
         uint16_t startBar, lengthBars;
+        uint16_t mask;          // channels this clip plays
     };
     Clip clips_[cfg::kMaxClips];
     int clipCount_;
+
+    struct AudioClip {
+        uint8_t track, slot;     // slot 0xff = none
+        uint16_t startBar, lengthBars;
+        uint8_t volume, flags;   // flags: bit0 loop, bits1..4 mixer route
+        uint32_t trimStart, trimEnd;
+    };
+    AudioClip aclips_[cfg::kMaxAudioClips];
+    int aclipCount_;
+    bool justStarted_;          // the next song step begins a (re)start: join clips already under way
+    int exportPasses_;          // > 0 in export mode
+    bool metronome_ = false;
+
+    // Notes that start part-way through a step wait here until their frame comes.
+    struct PendingNote {
+        uint32_t frame;      // absolute engine frame
+        uint16_t gateTicks;
+        uint8_t channel, velocity;
+        int8_t semis;
+    };
+    static constexpr int kMaxPending = 64;
+    PendingNote pending_[kMaxPending];
+    int pendingCount_ = 0;
+    bool exporting() const { return exportPasses_ > 0; }
     int songSteps_;         // length of the song in steps (0 = no clips)
     bool songMode_;
 

@@ -16,12 +16,17 @@
 #include "project/sample_library.hpp"
 #include "project/session.hpp"
 #include "ui/browser.hpp"
+#include "audio/ram_export_file.hpp"
+#include "audio/wav_export.hpp"
+#include "platform/ps2_export_file.hpp"
 #include "ui/channel_rack.hpp"
+#include "ui/instrument_view.hpp"
 #include "ui/mixer_view.hpp"
 #include "ui/piano_roll.hpp"
 #include "ui/playlist_view.hpp"
 #include "ui/project_view.hpp"
 #include "ui/view.hpp"
+#include "ui/waveform.hpp"
 #include "ui/widgets.hpp"
 
 class App {
@@ -41,6 +46,7 @@ private:
     void serviceDebugMailbox(InputState& in);
     void publishTelemetry();
     static bool waitForAudio();
+    static uint64_t profileClock();
 
     StatusLog log_;
     Gfx gfx_;
@@ -53,10 +59,15 @@ private:
     SelfTestSource testSource_;
     SampleLibrary library_;
     ui::ContextMenu menu_;
+    UsbExportFile exportFile_;
+    Ps2AudioHold audioHold_;
+    Exporter exporter_;
+    WaveformCache waves_;
     UiContext ctx_;
 
     ChannelRackView rack_;
     PianoRollView roll_;
+    InstrumentView instrument_;
     PlaylistView playlist_;
     MixerView mixer_;
     BrowserView browser_;
@@ -74,6 +85,22 @@ private:
     uint32_t stickDir_ = 0;
     uint32_t stickNextMs_ = 0;
     uint32_t seenLibraryMsg_ = 0;
+
+    // Autosave: a changed project is written to PS2DAW/AUTOSAVE.ps2daw every
+    // kAutosaveMs, so a crash or power loss costs at most a couple of minutes.
+    void serviceAutosave();
+    void buildStressProject();
+    void benchFx();
+    void startRamExport(bool song);
+    void drawExportOverlay();
+    RamExportFile* ramFile_ = nullptr;
+    Exporter* ramExporter_ = nullptr;
+    uint32_t autosaveCheckMs_ = 0;
+    uint32_t autosaveLastMs_ = 0;
+    uint32_t autosaveCrc_ = 0;
+    bool autosaveHaveCrc_ = false;
+    bool autosaveDirty_ = false;
+    bool recoveryOffered_ = false;
 
     static App* instance_;
 };

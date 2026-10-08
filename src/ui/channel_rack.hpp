@@ -37,20 +37,32 @@ private:
         MenuClearConfirm,
         MenuPianoRoll,
         MenuGate,
+        MenuInstrument,
+        MenuRoute,
+        MenuBrowse,
+        MenuAddChannel,
+        MenuAddSampler,
+        MenuAddSynth,
+        MenuRemoveChannel,
+        MenuRemoveConfirm,
         MenuSampleBase = 100,
         MenuLengthBase = 200,
         MenuCopyBase = 300,
+        MenuRouteBase = 400,
     };
 
     void openChannelMenu(UiContext& ctx);
     void openPatternMenu(UiContext& ctx);
     void handleMenu(int id, UiContext& ctx);
     void adjustValue(int delta, UiContext& ctx);
+    void cycleSample(int dir, UiContext& ctx);
     int stepAtColumn() const { return col_ - ColFirstStep + scroll_; }
     void clampCursor(const UiContext& ctx);
 
     int col_ = ColFirstStep;
     int scroll_ = 0;     // first visible step
+    int rowScroll_ = 0;  // first visible channel row
+    static constexpr int kVisibleRows = 8;
     bool editing_ = false;
     bool confirmOverwrite_ = false;
     int overwriteTarget_ = 0;

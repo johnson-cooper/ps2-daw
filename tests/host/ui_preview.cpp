@@ -19,6 +19,9 @@
 #include "project/session.hpp"
 #include "ui/browser.hpp"
 #include "ui/channel_rack.hpp"
+#include "ui/instrument_view.hpp"
+#include "ui/waveform.hpp"
+#include "audio/wav_export.hpp"
 #include "ui/debug_overlay.hpp"
 #include "ui/font.hpp"
 #include "ui/mixer_view.hpp"
@@ -217,9 +220,8 @@ static void chrome(Gfx& g, UiContext& ctx, int tab, View& v)
     g.text(250, 18, "120.00 BPM", theme::kText);
     g.text(390, 18, "P1 2.1", theme::kText);
     g.text(540, 18, G_NOTE " OK", theme::kOk);
-    const char* labels[] = {"RACK", "ROLL", "SONG", "MIXER", "BROWSER", "PROJECT"};
-    ui::tabBar(g, theme::kSafeLeft, 48, labels, 6, tab);
-    g.text(theme::kSafeRight - Gfx::textWidth("SELECT: VIEW", 1), 50, "SELECT: VIEW", theme::kTextDim, 1, 2);
+    const char* labels[] = {"RACK", "ROLL", "INST", "SONG", "MIXER", "BROWSER", "PROJECT"};
+    ui::tabBar(g, theme::kSafeLeft, 48, labels, 7, tab);
     v.draw(g, ctx);
     const int y = kViewBottom + 4;
     g.fillRect(0, y, Gfx::kWidth, Gfx::kHeight - y, theme::kPanelDark);
@@ -228,6 +230,36 @@ static void chrome(Gfx& g, UiContext& ctx, int tab, View& v)
 }
 
 static bool noWait() { return false; }
+
+// Export plumbing is not exercised by the layout previews.
+struct NullExportFile : ExportFile {
+    bool open(const char*) override { return false; }
+    bool write(const void*, uint32_t) override { return false; }
+    bool rewriteHeader(const uint8_t*, uint32_t) override { return false; }
+    bool close() override { return true; }
+    bool readHeader(const char*, uint8_t*, uint32_t, uint32_t*) override { return false; }
+    bool rename(const char*, const char*) override { return false; }
+    void remove(const char*) override {}
+};
+
+static void step(View& v, UiContext& ctx, uint32_t buttons, int times = 1)
+{
+    InputState in;
+    in.pressed = in.repeat = in.held = buttons;
+    for (int i = 0; i < times; ++i)
+        v.update(in, ctx);
+}
+
+static void snapshot(Gfx& g, UiContext& ctx, int tab, View& v, const char* dir, const char* name, bool menu = false)
+{
+    g.beginFrame(theme::kBackground);
+    chrome(g, ctx, tab, v);
+    if (menu)
+        ctx.menu.draw(g);
+    char path[256];
+    snprintf(path, sizeof(path), "%s/%s.png", dir, name);
+    writePng(path);
+}
 
 int main(int argc, char** argv)
 {
@@ -275,17 +307,21 @@ int main(int argc, char** argv)
         int16_t* d = (int16_t*)calloc(2 * 44100, sizeof(int16_t));
         bank.add("CLAP.WAV", d, 44100, 44100, 2, false, "samples:CLAP.WAV", 176444);
     }
-    UiContext ctx{session, engine, audio, storage, log, bank, menu, library};
+    static NullExportFile nullFile;
+    static Exporter exporter(engine, session, nullFile, nullptr);
+    static WaveformCache waves;
+    UiContext ctx{session, engine, audio, storage, log, bank, menu, library, exporter, waves};
     ctx.selectedChannel = 2;
     Gfx g;
     ChannelRackView rack;
     PianoRollView roll;
+    InstrumentView instrument;
     PlaylistView playlist;
     MixerView mixer;
     BrowserView browser;
     ProjectView project;
-    View* views[] = {&rack, &roll, &playlist, &mixer, &browser, &project};
-    const char* names[] = {"rack", "roll", "playlist", "mixer", "browser", "project"};
+    View* views[] = {&rack, &roll, &instrument, &playlist, &mixer, &browser, &project};
+    const char* names[] = {"rack", "roll", "instrument", "playlist", "mixer", "browser", "project"};
     char path[256];
     session.placeClip(0, 0, 0, 2);
     session.placeClip(0, 2, 1, 1);
@@ -303,12 +339,103 @@ int main(int argc, char** argv)
     session.addNote(0, 2, 8, 67, 2, 70);
     session.addNote(0, 2, 12, 72, 3, 100);
     session.addNote(0, 2, 13, 55, 1, 60);
-    for (int i = 0; i < 6; ++i) {
+    session.ungroupClip(session.project().clipAt(0, 0)); // instruments of pattern 1 get their own clips
+    // Mixer content for the new previews: routing, inserts with effects, a synth channel, an audio clip.
+    session.setRoute(0, 1);
+    session.setRoute(1, 1);
+    session.setRoute(2, 2);
+    session.setRoute(7, 3);
+    session.setMixerTrackName(1, "DRUMS");
+    session.setMixerTrackName(3, "BASS");
+    session.setFxType(1, 0, FxType::Eq);
+    session.setFxType(1, 1, FxType::Compressor);
+    session.setFxParam(1, 1, 0, -22);
+    session.setFxType(3, 0, FxType::Filter);
+    session.setFxType(0, 0, FxType::Reverb);
+    session.setFxBypass(0, 0, true);
+    session.applySynthPreset(3, 1);
+    session.setEnvParam(0, kEnvEnabled, 1);
+    session.setEnvParam(0, kEnvAttack, 30);
+    session.setEnvParam(0, kEnvDecay, 300);
+    session.setEnvParam(0, kEnvSustain, 55);
+    session.setEnvParam(0, kEnvRelease, 400);
+    session.setPlaylistTrackName(1, "BASS");
+    {
+        // A 1.5 s synthetic loop with a few hits, as an audio clip with its waveform.
+        int16_t* d = (int16_t*)calloc(72000, sizeof(int16_t));
+        for (int i = 0; i < 72000; ++i) {
+            const int hit = i % 18000;
+            d[i] = (int16_t)(hit < 6000 ? (int)(16000.0 * (1.0 - hit / 6000.0)) * ((i / 40) % 2 ? 1 : -1) : 0);
+        }
+        const int s = bank.add("LOOP.WAV", d, 72000, 48000, 1, false, "samples:LOOP.WAV", 144044);
+        session.placeAudioClip(4, 2, s);
+        session.placeAudioClip(5, 0, s, 3);
+        session.setAudioClipLoop(1, true);
+        for (int i = 0; i < 10; ++i)
+            waves.tick(bank);
+    }
+    // keep the audio running so meters show levels
+    for (int i = 0; i < 40; ++i)
+        engine.render(buf, 512);
+    for (int i = 0; i < 7; ++i) {
         g.beginFrame(theme::kBackground);
         chrome(g, ctx, i, *views[i]);
         snprintf(path, sizeof(path), "%s/%s.png", outDir, names[i]);
         writePng(path);
     }
+    // ---- instrument: sampler envelope, then the synth ----
+    ctx.selectedChannel = 0;
+    instrument.onEnter(ctx);
+    snapshot(g, ctx, 2, instrument, outDir, "instrument_sampler");
+    step(instrument, ctx, btn::Down, 3);
+    step(instrument, ctx, btn::Right, 2);
+    ctx.selectedChannel = 3;
+    instrument.onEnter(ctx);
+    snapshot(g, ctx, 2, instrument, outDir, "instrument_synth");
+    step(instrument, ctx, btn::Down, 8);
+    snapshot(g, ctx, 2, instrument, outDir, "instrument_synth_scrolled");
+    step(instrument, ctx, btn::Triangle);
+    snapshot(g, ctx, 2, instrument, outDir, "instrument_menu", true);
+    menu.close();
+    // ---- mixer: channels, inserts, effects editor ----
+    ctx.selectedChannel = 2;
+    step(mixer, ctx, btn::L2);
+    snapshot(g, ctx, 4, mixer, outDir, "mixer_inserts");
+    step(mixer, ctx, btn::Circle);
+    snapshot(g, ctx, 4, mixer, outDir, "mixer_fx");
+    step(mixer, ctx, btn::Right);
+    step(mixer, ctx, btn::Down);
+    snapshot(g, ctx, 4, mixer, outDir, "mixer_fx_params");
+    step(mixer, ctx, btn::Circle);
+    step(mixer, ctx, btn::Circle);
+    step(mixer, ctx, btn::Triangle);
+    snapshot(g, ctx, 4, mixer, outDir, "mixer_menu", true);
+    menu.close();
+    // ---- playlist with audio clips and the clip editor ----
+    step(playlist, ctx, btn::Down, 4);
+    step(playlist, ctx, btn::Right, 2);
+    step(playlist, ctx, btn::Triangle);
+    snapshot(g, ctx, 3, playlist, outDir, "playlist_menu", true);
+    menu.close();
+    // ---- piano roll in select mode with two notes selected ----
+    ctx.selectedChannel = 2;
+    roll.onEnter(ctx);
+    step(roll, ctx, btn::Triangle);
+    step(roll, ctx, btn::Cross);      // menu: Mode -> SELECT
+    step(roll, ctx, btn::Cross);      // pick the note under the cursor (step 1, C4)
+    step(roll, ctx, btn::Right, 2);
+    step(roll, ctx, btn::Up, 3);
+    step(roll, ctx, btn::Cross);      // and the Eb4 at step 3
+    snapshot(g, ctx, 1, roll, outDir, "roll_select");
+    step(roll, ctx, btn::Square);     // grab
+    step(roll, ctx, btn::Right, 2);
+    step(roll, ctx, btn::Up, 2);
+    snapshot(g, ctx, 1, roll, outDir, "roll_grab");
+    step(roll, ctx, btn::Cross);      // drop
+    step(roll, ctx, btn::Triangle);
+    snapshot(g, ctx, 1, roll, outDir, "roll_menu", true);
+    menu.close();
+    printf("extra previews done\n");
     // Browser on the USB source, and its action menu.
     {
         InputState l2;

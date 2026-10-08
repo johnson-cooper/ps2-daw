@@ -22,7 +22,7 @@ struct DebugMailbox {
     volatile uint32_t command;
     volatile uint32_t arg;
     // App -> debugger, refreshed every frame (see App::publishTelemetry()).
-    volatile uint32_t telemetry[32];
+    volatile uint32_t telemetry[48];
 };
 
 enum DebugCommand : uint32_t {
@@ -30,6 +30,10 @@ enum DebugCommand : uint32_t {
     DbgSampleSelfTest = 1,     // load synthetic WAVs through the real library path
     DbgReleaseUnreferenced = 2,
     DbgSwitchView = 3,         // arg = ViewId
+    DbgStressProject = 4,      // build a heavy test song (synths, inserts, every effect) and play it
+    DbgExportRam = 5,          // render the song through the WAV exporter into a RAM block (arg = 1 song, 0 pattern)
+    DbgFxBench = 7,            // time every effect type on 512-frame blocks; results in telemetry[37..43] (us per block)
+    DbgBeginMeasure = 6,       // reset the render-time maxima
 };
 
 extern DebugMailbox g_debugMailbox;

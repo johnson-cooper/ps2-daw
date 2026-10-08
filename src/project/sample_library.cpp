@@ -354,6 +354,21 @@ void SampleLibrary::onProjectLoaded()
         if (k == sampleref::Kind::Invalid || !request(c.sampleRef, Action::Bind))
             addMissing(c.sampleRef);
     }
+    // Samples used only by playlist audio clips.
+    for (int i = 0; i < cfg::kMaxAudioSources; ++i) {
+        bool used = false;
+        for (int k = 0; k < p.audioClipCount; ++k)
+            used |= p.audioClips[k].source == i;
+        if (!used || !p.audioRefs[i][0])
+            continue;
+        const sampleref::Kind k = sampleref::classify(p.audioRefs[i]);
+        if (k == sampleref::Kind::None || k == sampleref::Kind::Builtin)
+            continue;
+        if (p.audioSlot[i] >= 0 && bank_.get(p.audioSlot[i]))
+            continue;
+        if (k == sampleref::Kind::Invalid || !request(p.audioRefs[i], Action::Bind))
+            addMissing(p.audioRefs[i]);
+    }
     if (missingCount_)
         log_.set(Subsystem::Samples, Health::Warning, "%d sample(s) missing/failed", missingCount_);
 }

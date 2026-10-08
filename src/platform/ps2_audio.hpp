@@ -66,6 +66,13 @@ public:
     bool start(AudioEngine& engine, StatusLog& log);
 
     const Stats& stats() const { return stats_; }
+
+    // Parks the render thread (it stops calling the engine and feeding the
+    // stream) so another thread may drive AudioEngine::render() itself, e.g.
+    // for an offline WAV render. Waits up to `timeoutMs` for the thread to
+    // acknowledge. Returns true at once when no render thread is running.
+    bool hold(uint32_t timeoutMs);
+    void release();
     int latencyFrames() const { return latency_; }
     void setLatencyFrames(int frames);
 
@@ -112,6 +119,9 @@ private:
 
     Pending pending_[kPending];
     int pendingCount_ = 0;
+
+    volatile uint8_t holdRequest_ = 0;
+    volatile uint8_t holdAck_ = 0;
 
     int threadId_ = -1;
     void* stack_ = nullptr;

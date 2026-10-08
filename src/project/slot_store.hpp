@@ -31,6 +31,8 @@ public:
 namespace slotstore {
 
 constexpr int kSlots = 8;
+// Slot 0 holds the periodic autosave (AUTOSAVE.ps2daw, same TMP/BAK rotation).
+constexpr int kAutosaveSlot = 0;
 
 struct Info {
     bool exists;          // a main or backup file was found

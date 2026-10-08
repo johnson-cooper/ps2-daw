@@ -16,6 +16,13 @@ void Transport::setBpmCenti(uint32_t bpmCenti)
     increment_ = bpmCenti * (uint32_t)cfg::kPpq;
 }
 
+void Transport::setSwingTicks(int ticks)
+{
+    swing_ = ticks < 0 ? 0 : (ticks > cfg::kTicksPerStep / 2 ? cfg::kTicksPerStep / 2 : ticks);
+    // The boundary that is already scheduled moves with it.
+    nextStepTick_ = tickOfStep(nextStepTick_ / (uint32_t)cfg::kTicksPerStep);
+}
+
 void Transport::play()
 {
     if (state_ == State::Stopped) {
@@ -31,7 +38,7 @@ void Transport::startAtStep(int step)
 {
     if (step < 0)
         step = 0;
-    nextStepTick_ = (uint32_t)step * (uint32_t)cfg::kTicksPerStep;
+    nextStepTick_ = tickOfStep((uint32_t)step);
     acc_ = (uint64_t)nextStepTick_ * kDenominator;
     songFrames_ = 0;
     loops_ = 0;
@@ -79,6 +86,6 @@ int Transport::consumeStep(int patternSteps)
         step = 0;
         ++loops_;
     }
-    nextStepTick_ += (uint32_t)cfg::kTicksPerStep;
+    nextStepTick_ = tickOfStep((uint32_t)step + 1);
     return step;
 }

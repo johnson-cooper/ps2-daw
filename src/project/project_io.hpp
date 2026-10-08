@@ -12,7 +12,7 @@
 
 namespace projectio {
 
-constexpr uint16_t kFormatVersion = 1;
+constexpr uint16_t kFormatVersion = 2;
 constexpr size_t kMaxFileBytes = 64 * 1024;
 
 // Serialises into `buf`; returns bytes written, or 0 if `cap` is too small.

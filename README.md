@@ -13,7 +13,9 @@ can also be played directly on SPU2 hardware voices.
 
 ## Status
 
-Milestones 1-4 and the piano roll are implemented. Validation is tracked in three separate
+Milestones 1-6 and 8, the piano roll, sample envelopes, a native synthesizer and
+playlist audio clips are implemented; Milestone 9 (optimisation, autosave, larger
+projects) is partly done. Validation is tracked in three separate
 columns, because they mean different things:
 
 * **Builds**: `ps2build build` (PS2Build v2026.10.02, GCC 15.3) produces the ELF.
@@ -36,11 +38,19 @@ columns, because they mean different things:
 | Optional SPU2 upload of mono imports | yes | **no** | not yet |
 | Queued pattern switching (beat / bar), copy, duplicate, names | yes | yes (switch observed) | not yet |
 | Safe project saves (`.TMP` + `.BAK`), load recovery, slot info | yes | **no** (needs USB) | not yet |
-| Playlist: 6 tracks x 128 bars, clips, song mode with looping playhead | yes | yes (clips placed, song played and looped) | not yet |
+| Playlist: 8 tracks x 128 bars, clips, song mode with looping playhead | yes | yes (clips placed, song played and looped) | not yet |
 | Piano roll: pitched samples, chords, note length, sustained instruments (software voices) | yes | yes (notes placed from the rack menu and played) | not yet |
 | Pitched SPU2 voices (channel pitch) | yes | **no** | not yet |
 | Playlist: play from bar, track mute/solo, duplicate and move clips | yes | host tests only | not yet |
-| Effects / DSP, WAV export | later | | |
+| Mixer: 8 insert tracks + master, channel routing, stereo meters, clip lamps | yes | yes (meters and routing counts seen on the mixer screen) | not yet |
+| Effects: gain, filter, distortion, delay, compressor, EQ, reverb (4 slots per track) | yes | yes (all seven running in a stress song) | not yet |
+| AHDSR sample envelopes (note-on / note-off, polyphonic) | yes | yes | not yet |
+| Native synthesizer (2 oscillators, FM, sub, noise, filter, LFO, 9 presets) | yes | yes | not yet |
+| Playlist audio clips (place, move, duplicate, trim, loop, volume, route, waveform) | yes | yes (clip placed from the UI) | not yet |
+| Piano roll: select, grab/move, copy/paste, duplicate, quantize, transpose, undo/redo | yes | yes (select + grab) | not yet |
+| Swing and metronome | yes | host tests only | not yet |
+| Offline WAV export (song or pattern, 48 kHz stereo, tail, progress, cancel) | yes | yes: into a RAM buffer, and to PCSX2's virtual FAT32 USB image (file extracted and validated: header, 10.6 s, no clipping) | not yet |
+| Autosave and crash recovery | yes | yes (autosave written to the virtual USB image; an interrupted rotation was recovered from `.BAK`) | not yet |
 
 The platform-independent code (timing, formats, sample lifecycle, library,
 pattern scheduling, slot store) also has host unit tests, which are not a
@@ -92,14 +102,24 @@ Hold **SELECT** during boot to skip the USB storage drivers (recovery option).
 | Right stick | selected channel volume (up/down) and pan (left/right) |
 | START | play / pause |
 | L3 | stop and rewind |
-| SELECT | next view (Rack, Roll, Song, Mixer, Browser, Project) |
+| SELECT | next view (Rack, Roll, Inst, Song, Mixer, Browser, Project) |
 | R3 | debug overlay |
 
-Full per-view bindings: [docs/CONTROLS.md](docs/CONTROLS.md).
+Full per-view bindings: [docs/CONTROLS.md](docs/CONTROLS.md). New screens: **INST**
+(envelope, synth, presets, mixer track), **MIXER** (L2 switches between the channel
+strips and the eight inserts; Circle opens an insert's effect chain), **SONG** (audio
+clips next to pattern clips) and a much larger **ROLL** (select/grab, undo).
+
 
 ## Samples and storage
 
-* Built in: nine sounds synthesised at boot (no files needed).
+* Built in: nine sounds synthesised at boot (no files needed). Instruments are
+  either samplers (optionally shaped by an AHDSR envelope) or the native
+  synthesizer (INST tab).
+* Export: PROJECT > Export WAV renders the song (or the current pattern when the
+  playlist is empty) to `PS2DAW/EXPORT/<PROJECT NAME>.WAV`, 48 kHz stereo 16-bit.
+* Autosave: a changed project is written to `PS2DAW/AUTOSAVE.ps2daw` every 90 s;
+  PROJECT > Recover autosave loads it after a crash.
 * Import from USB: PCM WAV (8/16/24/32-bit integer, 32/64-bit float), mono/stereo, 4-96 kHz, converted to 16-bit on load, and `.adp`
   (APCM, loaded straight into SPU2 RAM). Limits: 3 MiB per WAV file and per
   converted sample, 12 MiB of imported PCM in total, 32 sample slots, 1 MiB per
@@ -135,10 +155,23 @@ for the test plan and what to report.
   (Instrument mode) to layer notes and let note lengths cut the sample.
 * SPU2-voiced channels get pitch from the piano roll but not note lengths, and
   one SPU2 voice per channel means the last note of a chord wins.
-* Piano-roll notes are 16th-step quantised, at most 32 per pattern and channel.
+* Piano-roll notes are 16th-step quantised, at most 64 per pattern and channel.
+* SPU2 hardware voices bypass the software mixer: inserts, effects, envelopes and
+  synths do not apply to them (only the insert fader / mute / solo is folded into
+  the hardware level). Exports render SPU2 channels in software; SPU2-only `.adp`
+  samples cannot be rendered and are counted and reported.
+* Playlist audio clips play native-rate sample data (no time-stretch); the whole
+  sample lives in RAM (3 MiB per file, 12 MiB total). Streaming from USB was
+  investigated and rejected for now, see docs/ARCHITECTURE.md.
+* Effects and synth voices cost EE time. A deliberately heavy test song (13 synth/
+  sampler voices, six inserts, eleven effects) uses about 63 % of the render period
+  in PCSX2; real-hardware cost is unmeasured.
+* Not implemented: time signatures other than 4/4, automation clips, wavetable
+  synthesis, undo/redo outside the piano roll.
 * SPU2-voiced channels are scheduled to within a few milliseconds of the
   stream (the software mixer is sample-accurate); they also bypass the
   software meters, which say "HW" instead of showing a fake level.
+* The rack holds up to 16 channels (8 at start; add / remove from the channel menu).
 * The bank holds up to 32 samples (9 are the built-in kit). Directory
   listings show the first 96 entries of a folder.
 * USB access runs on the UI thread (listing a folder, reading a file in
@@ -163,10 +196,11 @@ for the test plan and what to report.
                                                     └──── audio.irx / libsd.irx (IOP) ──► SPU2
 ```
 
-* `src/audio`: platform-independent engine (host-testable).
+* `src/audio`: platform-independent engine (host-testable): transport, sequencer, mixer
+  (voices, insert buses), effects, instruments (envelope, synth), WAV exporter.
 * `src/project`: song model, `.ps2daw` format, Session (edit API).
 * `src/platform`: PS2 specifics (IOP, GS, pad, audio backend, storage).
-* `src/ui`: widgets and views (Rack, Piano Roll, Song/Playlist, Mixer, Browser, Project).
+* `src/ui`: widgets and views (Rack, Piano Roll, Instrument, Song/Playlist, Mixer, Browser, Project).
 
 Details: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md),
 file format: [docs/PROJECT_FORMAT.md](docs/PROJECT_FORMAT.md).
@@ -177,11 +211,16 @@ file format: [docs/PROJECT_FORMAT.md](docs/PROJECT_FORMAT.md).
 2. **WAV/ADP loading from USB, sample browser** (done, awaiting hardware report)
 3. **Multiple patterns UX, project save/load polish** (done, awaiting hardware report)
 4. **Playlist / arrangement** (done, awaiting hardware report)
-5. Mixer: routing, inserts, better meters
-6. Lightweight DSP (gain, filters, delay, distortion, compressor)
+5. **Mixer: routing, inserts, meters** (done, awaiting hardware report)
+6. **Lightweight DSP: gain, filter, distortion, delay, compressor, EQ, reverb** (done, awaiting hardware report)
 7. **Piano roll + pitched sample instruments** (done, awaiting hardware report)
-8. Offline render to WAV on USB
-9. Optimisation, autosave/recovery, larger projects
+8. **Offline render to WAV on USB** (done; USB path awaiting hardware report)
+9. Optimisation, autosave/recovery, larger projects (partly done: EE cost work on reverb, compressor,
+   voices and idle buses; autosave and recovery; 64 notes per channel. Still open: measured real-hardware
+   performance, streaming for long samples, larger sample budgets)
+
+Also done since milestone 7: AHDSR envelopes, native synthesizer, playlist audio clips,
+piano-roll editing, swing, metronome.
 
 Order may change based on hardware findings.
 

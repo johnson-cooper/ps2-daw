@@ -6,6 +6,7 @@
 
 #include "audio/audio_engine.hpp"
 #include "audio/sample.hpp"
+#include "audio/wav_export.hpp"
 #include "core/status_log.hpp"
 #include "platform/ps2_audio.hpp"
 #include "platform/ps2_filesystem.hpp"
@@ -13,9 +14,10 @@
 #include "platform/ps2_input.hpp"
 #include "project/sample_library.hpp"
 #include "project/session.hpp"
+#include "ui/waveform.hpp"
 #include "ui/widgets.hpp"
 
-enum class ViewId : uint8_t { ChannelRack, PianoRoll, Playlist, Mixer, Browser, Project, Count };
+enum class ViewId : uint8_t { ChannelRack, PianoRoll, Instrument, Playlist, Mixer, Browser, Project, Count };
 
 // Everything a view may use. Views change the song only through `session`.
 struct UiContext {
@@ -27,6 +29,8 @@ struct UiContext {
     const SampleBank& bank;
     ui::ContextMenu& menu;
     SampleLibrary& library;
+    Exporter& exporter;
+    WaveformCache& waves;
 
     uint32_t nowMs = 0;
     int selectedChannel = 0;  // shared between rack, mixer and browser

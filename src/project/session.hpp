@@ -34,6 +34,11 @@ public:
     void stop();
     void togglePlayPause();
     void setBpmCenti(int bpmCenti);
+    // Swing delays every odd 16th step by `percent` (0..50) of a step; saved with the project.
+    void setSwing(int percent);
+    // Click on every beat (louder on the bar) while playing. Not saved; never rendered into exports.
+    void setMetronome(bool on);
+    bool metronome() const { return metronome_; }
 
     // Pattern editing (pattern index is always explicit or the current one)
     void toggleStep(int channel, int step);
@@ -59,8 +64,20 @@ public:
     // `lengthBars`. Clips on one track never overlap: placing over existing
     // clips replaces them. All of these return false (and change nothing)
     // for out-of-range arguments or when the clip table is full.
-    bool placeClip(int track, int startBar, int pattern, int lengthBars);
+    bool placeClip(int track, int startBar, int pattern, int lengthBars, uint16_t chanMask = kAllChannels);
     bool removeClip(int index);
+    // Ungrouping: a pattern clip can play only some of its pattern's instruments.
+    // splitClipChannel moves one instrument out of the clip into a new clip (same pattern, bars
+    // and length) on the first free track, so it can be moved, trimmed, muted or deleted on its own.
+    // False when there is no free track, the clip table is full, or the clip plays only that instrument.
+    bool splitClipChannel(int index, int channel);
+    // Gives every instrument that has steps or notes in the pattern a clip of its own (the first
+    // stays in the original clip). Returns how many new clips were made; it stops when the tracks run out.
+    int ungroupClip(int index);
+    // Restores a clip to play the whole pattern again.
+    void setClipMask(int index, uint16_t mask);
+    // True when the pattern has steps or piano-roll notes for the channel.
+    bool channelHasContent(int pattern, int channel) const;
     // Grows/shrinks a clip, never into the next clip on its track or past the
     // song limit. Returns the resulting length (0 if the index is invalid).
     int setClipLength(int index, int lengthBars);
@@ -78,6 +95,9 @@ public:
     // change nothing for bad arguments or when a channel holds kMaxNotes notes.
     bool addNote(int pattern, int channel, int step, int pitch, int length, int velocity);
     bool removeNote(int pattern, int channel, int index);
+    // Replaces the channel's whole note list (validated and clamped; at most kMaxNotes).
+    // The piano roll's selection, paste, move, quantize and undo all go through this.
+    bool setNotes(int pattern, int channel, const PianoNote* notes, int count);
     int noteIndexAt(int pattern, int channel, int step, int pitch) const;
     int setNoteLength(int pattern, int channel, int index, int length);
     void clearNotes(int pattern, int channel);
@@ -90,6 +110,13 @@ public:
     void setTrackSolo(int track, bool solo);
     // Starts the song at `bar` (song mode) or plays normally otherwise.
     void playFromBar(int bar);
+
+    // Rack channels (up to cfg::kMaxChannels). A new sampler channel gets the first
+    // loaded sample, a synth channel the INIT SAW patch. Returns the index or -1 when full.
+    int addChannel(bool synth);
+    // Removes a channel; later channels (and their steps and notes) move up one row.
+    // Re-syncs the whole song, so playback stops. False if it is the last channel.
+    bool removeChannel(int channel);
 
     // Channel strip
     void setVolume(int channel, int volume);
@@ -111,6 +138,56 @@ public:
     void setVoiceMode(int channel, VoiceMode mode);
     void setMasterVolume(int volume);
 
+    // ---- Mixer routing (Milestone 5) ----
+    // Routes a rack channel to an insert (1..cfg::kMixTracks) or the master (0).
+    // Any number of channels may share an insert.
+    void setRoute(int channel, int track);
+    void setMixVolume(int track, int volume);
+    void setMixPan(int track, int pan);
+    void setMixMute(int track, bool mute);
+    void setMixSolo(int track, bool solo);
+    void setMixerTrackName(int track, const char* name);
+    void clearClipLatch();
+
+    // ---- Effects (Milestone 6): chain slots 0..cfg::kFxSlots-1 on track 0 (master) .. 8 ----
+    void setFxType(int track, int slot, FxType type);
+    void setFxParam(int track, int slot, int index, int value);
+    void setFxBypass(int track, int slot, bool bypass);
+    // Swaps a slot with its neighbour (dir -1 / +1). Effect order is part of the project.
+    bool moveFx(int track, int slot, int dir);
+
+    // ---- Instruments: sampler envelope and native synthesizer ----
+    void setChannelKind(int channel, InstrKind kind);
+    void setEnvParam(int channel, int index, int value);
+    void setSynthParam(int channel, int index, int value);
+    // Switches the channel to the synthesizer and loads preset `i`.
+    void applySynthPreset(int channel, int preset);
+    void applyEnvPreset(int channel, int preset);
+
+    // ---- Playlist audio clips ----
+    // Places a bank sample on a playlist track. The length defaults to the
+    // sample's duration at the current tempo (rounded up to bars, 1..32).
+    // Returns the clip index, or -1 (track busy, table full, bad sample).
+    int placeAudioClip(int track, int startBar, int sampleSlot, int lengthBars = 0);
+    bool removeAudioClip(int index);
+    // Moves a clip; refuses (false) when the target overlaps another clip.
+    bool moveAudioClip(int index, int track, int startBar);
+    int duplicateAudioClip(int index);  // new clip index, placed right after the original
+    int setAudioClipLength(int index, int lengthBars);
+    // Frames cut from the start / the region end (0 = whole sample). Clamped to the sample.
+    bool setAudioClipTrim(int index, uint32_t startFrames, uint32_t endFrames);
+    void setAudioClipVolume(int index, int volume);
+    void setAudioClipLoop(int index, bool loop);
+    void setAudioClipRoute(int index, int track);
+    // Bank slot of an audio clip's sample (-1 if missing).
+    int audioClipSlot(int index) const;
+    void setPlaylistTrackName(int track, const char* name);
+
+    // Offline rendering: with passes > 0 the engine renders software voices only
+    // and stops (exportDone) after that many passes of the song (or pattern loop);
+    // 0 returns to normal playback. The caller drives AudioEngine::render().
+    void setExportMode(int passes);
+
     // Auditioning
     void previewChannel(int channel, int semis = 0);
     void previewSample(int slot, VoiceMode mode);
@@ -124,6 +201,13 @@ private:
     bool post(CmdType t, int a = 0, int b = 0, int c = 0, int32_t value = 0);
     void syncAll();
     void syncClips();
+    void syncChannel(int channel);
+    void syncAudioClips();
+    void syncAudioClip(int index);
+    void syncInstrument(int channel);
+    void syncMixer();
+    void postFx(int track, int slot);
+    int audioSourceFor(const Sample& s);
     void syncNotes(int pattern, int channel);
     void syncTrackMask();
     int resolveSample(const ChannelData& c) const;
@@ -135,5 +219,6 @@ private:
     uint32_t dropped_;
     uint32_t loadSerial_;
     SwitchMode switchMode_ = SwitchMode::Immediate;
+    bool metronome_ = false;
     uint32_t releasePending_; // bitmask of slots whose Release command is not yet queued
 };

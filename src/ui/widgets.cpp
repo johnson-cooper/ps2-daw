@@ -1,6 +1,7 @@
 #include "ui/widgets.hpp"
 
 #include <math.h>
+#include <stdio.h>
 #include <string.h>
 
 #include "core/strutil.hpp"
@@ -150,6 +151,79 @@ void tabBar(Gfx& g, int x, int y, const char* const* labels, int count, int acti
     }
 }
 
+void paramRow(Gfx& g, int x, int y, int w, const char* name, const char* value, int frac, bool selected, bool editing)
+{
+    g.fillRect(x, y, w, 20, selected ? theme::kPanelHeader : theme::kPanel);
+    if (selected)
+        g.fillRect(x, y, 4, 20, editing ? theme::kEdit : theme::kSelect);
+    g.text(x + 10, y + 2, name, selected ? theme::kText : theme::kTextDim, 1, 2);
+    const int bx = x + w - 150, bw = 60;
+    g.fillRect(bx, y + 7, bw, 6, theme::kPanelDark);
+    if (frac > 0)
+        g.fillRect(bx, y + 7, bw * (frac > 1000 ? 1000 : frac) / 1000, 6, editing ? theme::kEdit : theme::kAccent);
+    g.text(bx + bw + 8, y + 2, value, selected ? theme::kText : theme::kTextDim, 1, 2);
+}
+
+void hmeter(Gfx& g, int x, int y, int w, int h, uint16_t level, bool clipped)
+{
+    g.fillRect(x, y, w, h, theme::kPanelDark);
+    int db = levelToDb(level);
+    if (db < -48)
+        db = -48;
+    const int fw = (db + 48) * (w - 6) / 48;
+    if (fw > 0) {
+        const int yellow = (48 - 12) * (w - 6) / 48, red = (48 - 3) * (w - 6) / 48;
+        g.fillRect(x, y, fw < yellow ? fw : yellow, h, theme::kMeterLow);
+        if (fw > yellow)
+            g.fillRect(x + yellow, y, (fw < red ? fw : red) - yellow, h, theme::kMeterMid);
+        if (fw > red)
+            g.fillRect(x + red, y, fw - red, h, theme::kMeterHigh);
+    }
+    g.fillRect(x + w - 5, y, 5, h, clipped ? theme::kError : theme::kCellOffAlt);
+}
+
+void envelopeGraph(Gfx& g, int x, int y, int w, int h, const int16_t* env, bool enabled)
+{
+    g.fillRect(x, y, w, h, theme::kPanelDark);
+    const float a = (float)env[1], hold = (float)env[2], d = (float)env[3], r = (float)env[5];
+    const float sus = env[4] / 100.0f;
+    // Time axis: attack + hold + decay, then a fixed sustain stretch, then the release.
+    const float decayShown = d > 0 ? d : 1.0f;
+    const float head = a + hold + decayShown;
+    const float sustainShown = head * 0.4f + 40.0f;
+    const float total = head + sustainShown + r;
+    const uint32_t col = enabled ? theme::kAccent : theme::kTextDim;
+    int prevY = y + h;
+    for (int px = 0; px < w; ++px) {
+        const float t = total * (float)px / (float)w;
+        float level;
+        if (t < a)
+            level = a > 0 ? t / a : 1.0f;
+        else if (t < a + hold)
+            level = 1.0f;
+        else if (t < head)
+            level = d > 0 ? sus + (1.0f - sus) * powf(0.001f, (t - a - hold) / d) : sus;
+        else if (t < head + sustainShown)
+            level = sus;
+        else
+            level = r > 0 ? sus * powf(0.001f, (t - head - sustainShown) / r) : 0.0f;
+        if (!enabled)
+            level = t < head + sustainShown ? 1.0f : 0.0f;
+        const int top = y + h - 2 - (int)(level * (float)(h - 6));
+        // fill under the curve with a faint column, bright cap
+        g.fillRect(x + px, top, 1, y + h - top, 0x3b2a14);
+        const int lo = top < prevY ? top : prevY, hi = top < prevY ? prevY : top;
+        g.fillRect(x + px, lo, 2, hi - lo + 2, col);
+        prevY = top;
+    }
+    // Stage markers
+    const int xa = x + (int)(a / total * (float)w), xh = x + (int)((a + hold) / total * (float)w), xd = x + (int)(head / total * (float)w),
+              xs = x + (int)((head + sustainShown) / total * (float)w);
+    const int marks[4] = {xa, xh, xd, xs};
+    for (int mx : marks)
+        g.fillRect(mx, y + h - 4, 1, 4, theme::kTextDim);
+}
+
 // ---- ContextMenu -----------------------------------------------------------
 
 void ContextMenu::open(const char* title)
@@ -157,6 +231,7 @@ void ContextMenu::open(const char* title)
     str::copy(title_, sizeof(title_), title);
     count_ = 0;
     sel_ = 0;
+    top_ = 0;
     open_ = true;
 }
 
@@ -197,17 +272,31 @@ void ContextMenu::draw(Gfx& g) const
     if (!open_)
         return;
     const int rowH = 22;
-    const int w = 460;
-    const int h = 30 + count_ * rowH + 26;
+    const int w = 500;
+    const int rows = count_ < kRows ? count_ : kRows;
+    if (sel_ < top_)
+        top_ = sel_;
+    if (sel_ >= top_ + rows)
+        top_ = sel_ - rows + 1;
+    const int h = 30 + rows * rowH + 26;
     const int x = (Gfx::kWidth - w) / 2;
     const int y = (Gfx::kHeight - h) / 2;
     g.fillRect(0, 0, Gfx::kWidth, Gfx::kHeight, 0x000000, 0x50); // dim the screen behind
     g.fillRect(x - 2, y - 2, w + 4, h + 4, theme::kAccent);
     panel(g, x, y, w, h, title_);
-    for (int i = 0; i < count_; ++i) {
-        const int ry = y + 28 + i * rowH;
+    const int maxChars = (w - 36) / 12; // never draw past the box
+    for (int r = 0; r < rows; ++r) {
+        const int i = top_ + r;
+        const int ry = y + 28 + r * rowH;
         listRow(g, x + 4, ry, w - 8, rowH - 2, i == sel_);
-        g.text(x + 14, ry + 2, items_[i].label, items_[i].enabled ? theme::kText : theme::kTextDim);
+        char buf[64];
+        snprintf(buf, sizeof(buf), "%.*s", maxChars, items_[i].label);
+        g.text(x + 14, ry + 2, buf, items_[i].enabled ? theme::kText : theme::kTextDim);
+    }
+    if (count_ > rows) { // scroll hints on the right edge of the title bar
+        char pos[32];
+        snprintf(pos, sizeof(pos), "%d/%d", sel_ + 1, count_);
+        g.text(x + w - 12 - Gfx::textWidth(pos), y + 3, pos, theme::kTextDim);
     }
     const char* hint = G_CROSS " SELECT   " G_CIRCLE " BACK";
     g.text(x + 14, y + h - 22, hint, theme::kTextDim);

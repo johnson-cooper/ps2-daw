@@ -51,8 +51,11 @@ const int kLengths[] = {8, 12, 16, 24, 32, 48, 64};
 
 const char* ChannelRackView::hint() const
 {
-    return editing_ ? G_LEFT G_RIGHT " ADJUST  L1/R1 x10  " G_CROSS "/" G_CIRCLE " DONE"
-                    : G_CROSS " STEP  " G_SQUARE " MUTE  " G_TRIANGLE " MENU  " G_CIRCLE " PREVIEW  L1/R1 BEAT  L2/R2 PATTERN";
+    if (editing_)
+        return G_LEFT G_RIGHT " ADJUST  L1/R1 x10  " G_CROSS "/" G_CIRCLE " DONE";
+    if (col_ == ColName)
+        return G_CROSS " HEAR  L1/R1 SWAP SAMPLE  " G_TRIANGLE " MENU>BROWSE  " G_SQUARE " MUTE  L2/R2 PATTERN";
+    return G_CROSS " STEP " G_SQUARE " MUTE " G_TRIANGLE " MENU " G_CIRCLE " HEAR L1/R1 BEAT L2/R2 PTN";
 }
 
 void ChannelRackView::clampCursor(const UiContext& ctx)
@@ -79,6 +82,23 @@ void ChannelRackView::adjustValue(int delta, UiContext& ctx)
         ctx.session.setPan(ch, c.pan + delta * 2);
 }
 
+// Steps the channel through the loaded samples (wraps), previewing each one.
+void ChannelRackView::cycleSample(int dir, UiContext& ctx)
+{
+    const int ch = ctx.selectedChannel;
+    const int n = cfg::kMaxSamples;
+    int slot = ctx.session.project().channels[ch].sampleSlot;
+    for (int k = 0; k < n; ++k) {
+        slot = ((slot < 0 ? (dir > 0 ? -1 : 0) : slot) + dir + n) % n;
+        if (ctx.bank.get(slot)) {
+            ctx.session.setSample(ch, slot);
+            ctx.session.previewChannel(ch);
+            ctx.toast("CH%d sample: %s (%d/%d)", ch + 1, ctx.session.project().channels[ch].name, slot + 1, ctx.bank.count());
+            return;
+        }
+    }
+}
+
 void ChannelRackView::openChannelMenu(UiContext& ctx)
 {
     const int ch = ctx.selectedChannel;
@@ -90,7 +110,13 @@ void ChannelRackView::openChannelMenu(UiContext& ctx)
     char buf[40];
     ctx.menu.add(MenuPreview, "Preview sound");
     ctx.menu.add(MenuPianoRoll, "Piano roll...");
-    ctx.menu.add(MenuSample, "Choose sample...");
+    ctx.menu.add(MenuSample, "Choose loaded sample...");
+    ctx.menu.add(MenuBrowse, "Browse USB samples...");
+    char line[64];
+    snprintf(line, sizeof(line), "Instrument: %s, envelope...", c.inst.kind == (uint8_t)InstrKind::Synth ? "SYNTH" : "sampler");
+    ctx.menu.add(MenuInstrument, line);
+    snprintf(line, sizeof(line), "Mixer track: %.10s...", c.route == 0 ? "MASTER" : ctx.session.project().tracks[c.route].name);
+    ctx.menu.add(MenuRoute, line);
     const bool spu = c.voiceMode == (uint8_t)VoiceMode::Spu2;
     snprintf(buf, sizeof(buf), "Voice: %s", spu ? "SPU2 hardware" : "Software mix");
     ctx.menu.add(MenuVoiceMode, buf, ctx.audio.stats().spuSounds > 0 || spu);
@@ -102,6 +128,12 @@ void ChannelRackView::openChannelMenu(UiContext& ctx)
     ctx.menu.add(MenuClearChannel, "Clear channel steps");
     ctx.menu.add(MenuLength, "Pattern length...");
     ctx.menu.add(MenuPatternMenu, "Pattern tools...");
+    {
+        char add[48];
+        snprintf(add, sizeof(add), "Add channel... (%d/%d)", ctx.session.project().channelCount, cfg::kMaxChannels);
+        ctx.menu.add(MenuAddChannel, add, ctx.session.project().channelCount < cfg::kMaxChannels);
+    }
+    ctx.menu.add(MenuRemoveChannel, "Remove this channel...", ctx.session.project().channelCount > 1);
     ctx.menu.add(MenuStop, "Stop transport");
 }
 
@@ -139,6 +171,11 @@ void ChannelRackView::handleMenu(int id, UiContext& ctx)
         s.setSample(ch, id - MenuSampleBase);
         s.previewChannel(ch);
         ctx.toast("Channel %d sample: %s", ch + 1, s.project().channels[ch].name);
+        return;
+    }
+    if (id >= MenuRouteBase && id < MenuRouteBase + cfg::kMixBuses) {
+        s.setRoute(ch, id - MenuRouteBase);
+        ctx.toast("Channel %d plays into %s", ch + 1, id == MenuRouteBase ? "MASTER" : s.project().tracks[id - MenuRouteBase].name);
         return;
     }
     if (id >= MenuCopyBase && id < MenuCopyBase + cfg::kMaxPatterns) {
@@ -238,6 +275,48 @@ void ChannelRackView::handleMenu(int id, UiContext& ctx)
     case MenuPianoRoll:
         ctx.requestedView = ViewId::PianoRoll;
         break;
+    case MenuAddChannel:
+        ctx.menu.open("ADD CHANNEL");
+        menuMode_ = 4;
+        ctx.menu.add(MenuAddSampler, "Sampler (first loaded sample)");
+        ctx.menu.add(MenuAddSynth, "Synthesizer (INIT SAW)");
+        break;
+    case MenuAddSampler:
+    case MenuAddSynth: {
+        const int n = s.addChannel(id == MenuAddSynth);
+        if (n >= 0) {
+            ctx.selectedChannel = n;
+            ctx.toast(id == MenuAddSynth ? "Synth channel %d added: INST tab for presets" : "Channel %d added: L1/R1 on its name swaps the sample", n + 1);
+        }
+        break;
+    }
+    case MenuRemoveChannel:
+        ctx.menu.open("REMOVE THIS CHANNEL?");
+        menuMode_ = 4;
+        ctx.menu.add(MenuRemoveConfirm, "Yes: its steps and notes go too");
+        break;
+    case MenuRemoveConfirm:
+        if (s.removeChannel(ch)) {
+            ctx.toast("Channel %d removed (playback stopped)", ch + 1);
+            if (ctx.selectedChannel >= s.project().channelCount)
+                ctx.selectedChannel = s.project().channelCount - 1;
+        }
+        break;
+    case MenuBrowse:
+        ctx.requestedView = ViewId::Browser; // the browser assigns to the selected channel
+        break;
+    case MenuInstrument:
+        ctx.requestedView = ViewId::Instrument;
+        break;
+    case MenuRoute: {
+        ctx.menu.open("MIXER TRACK");
+        for (int t = 0; t < cfg::kMixBuses; ++t) {
+            char buf[40];
+            snprintf(buf, sizeof(buf), "%s%s", t == 0 ? "MASTER (no insert)" : s.project().tracks[t].name, c.route == t ? "  *" : "");
+            ctx.menu.add(MenuRouteBase + t, buf);
+        }
+        break;
+    }
     case MenuGate:
         s.setChannelGate(ch, !c.gate);
         ctx.toast(s.project().channels[ch].gate ? "Sustained: piano-roll note length cuts the sample" : "One-shot: samples play to the end");
@@ -305,6 +384,8 @@ void ChannelRackView::update(const InputState& in, UiContext& ctx)
 
     const int channels = s.project().channelCount;
     int& row = ctx.selectedChannel;
+    if (row >= channels)
+        row = channels - 1;
     const int len = s.project().pattern().length;
 
     if (editing_) {
@@ -343,8 +424,11 @@ void ChannelRackView::update(const InputState& in, UiContext& ctx)
             ++col_;
         }
     }
-    // L1/R1: jump one beat (4 steps) through the grid.
-    if (in.rep(btn::L1) || in.rep(btn::R1)) {
+    // L1/R1 on the name column: previous / next loaded sample for this channel.
+    if (col_ == ColName && (in.hit(btn::L1) || in.hit(btn::R1)))
+        cycleSample(in.hit(btn::R1) ? 1 : -1, ctx);
+    // L1/R1 elsewhere: jump one beat (4 steps) through the grid.
+    else if (in.rep(btn::L1) || in.rep(btn::R1)) {
         int step = col_ >= ColFirstStep ? stepAtColumn() : 0;
         step += in.rep(btn::R1) ? 4 : -4;
         step = step < 0 ? 0 : (step >= len ? len - 1 : step);
@@ -396,6 +480,10 @@ void ChannelRackView::update(const InputState& in, UiContext& ctx)
             s.setPan(row, c.pan + in.rx / 24);
     }
 
+    if (row < rowScroll_)
+        rowScroll_ = row;
+    if (row >= rowScroll_ + kVisibleRows)
+        rowScroll_ = row - kVisibleRows + 1;
     clampCursor(ctx);
 }
 
@@ -409,12 +497,18 @@ void ChannelRackView::draw(Gfx& g, UiContext& ctx)
     char title[64];
     const int lastVisible = (scroll_ + kVisibleSteps < pat.length ? scroll_ + kVisibleSteps : pat.length);
     snprintf(title, sizeof(title), "CHANNEL RACK   %s   STEPS %d-%d/%d", pat.name, scroll_ + 1, lastVisible, pat.length);
-    const int panelH = 28 + p.channelCount * kRowH + 2;
+    const int rows = p.channelCount < kVisibleRows ? p.channelCount : kVisibleRows;
+    if (rowScroll_ > p.channelCount - rows)
+        rowScroll_ = p.channelCount - rows;
+    const int panelH = 28 + rows * kRowH + 2;
     ui::panel(g, kPanelX, kViewTop, kPanelW, panelH, title);
 
-    for (int ch = 0; ch < p.channelCount; ++ch) {
+    if (p.channelCount > rows)
+        ui::scrollbar(g, kPanelX + kPanelW - 6, kRowsY, 4, rows * kRowH - 4, rowScroll_, rows, p.channelCount);
+    for (int r = 0; r < rows; ++r) {
+        const int ch = rowScroll_ + r;
         const ChannelData& c = p.channels[ch];
-        const int y = kRowsY + ch * kRowH;
+        const int y = kRowsY + r * kRowH;
         const bool rowSel = ch == ctx.selectedChannel;
         if (rowSel)
             g.fillRect(kPanelX + 2, y - 2, kPanelW - 4, kRowH - 4, theme::kPanelHeader);
@@ -432,8 +526,12 @@ void ChannelRackView::draw(Gfx& g, UiContext& ctx)
 
         g.fillRect(kNameX, y + 1, kNameW, 20, rowSel ? theme::kAccent : theme::kCellOffAlt);
         char name[8];
-        snprintf(name, sizeof(name), "%.7s", c.name);
-        g.text(kNameX + 4, y + 3, name, rowSel ? theme::kTextDark : theme::kText);
+        snprintf(name, sizeof(name), "%.6s", c.name);
+        const bool isSynth = c.inst.kind == (uint8_t)InstrKind::Synth;
+        g.text(kNameX + 4, y + 3, name, rowSel ? theme::kTextDark : (isSynth ? theme::kHardware : theme::kText));
+        // mixer insert this channel plays into
+        if (c.route > 0)
+            g.textf(kNameX + kNameW - 16, y + 3, rowSel ? theme::kTextDark : theme::kAccent, "%d", c.route);
         if (c.voiceMode == (uint8_t)VoiceMode::Spu2)
             g.fillRect(kNameX + kNameW - 5, y + 1, 5, 20, theme::kHardware);
         if (rowSel && col_ == ColName)
@@ -453,7 +551,7 @@ void ChannelRackView::draw(Gfx& g, UiContext& ctx)
     }
 
     // Step ruler under the grid: beat numbers.
-    const int rulerY = kRowsY + p.channelCount * kRowH + 4;
+    const int rulerY = kRowsY + rows * kRowH + 4;
     for (int i = 0; i < kVisibleSteps && scroll_ + i < pat.length; i += 4) {
         char n[12];
         snprintf(n, sizeof(n), "%d", (scroll_ + i) / 4 + 1);
@@ -469,7 +567,7 @@ void ChannelRackView::draw(Gfx& g, UiContext& ctx)
         snprintf(pan, sizeof(pan), "C");
     else
         snprintf(pan, sizeof(pan), "%c%d", c.pan < 0 ? 'L' : 'R', c.pan < 0 ? -c.pan : c.pan);
-    g.textf(kPanelX + 6, infoY, theme::kTextDim, "CH%d %-7s VOL %3d  PAN %-4s %s%s%s", ctx.selectedChannel + 1, c.name, c.volume, pan,
-            c.voiceMode == (uint8_t)VoiceMode::Spu2 ? "SPU2" : "SW",
-            c.mute ? " MUTED" : "", c.solo ? " SOLO" : "");
+    g.textf(kPanelX + 6, infoY, theme::kTextDim, "CH%d %-7s VOL %3d PAN %-4s %s %s>%s%s%s", ctx.selectedChannel + 1, c.name, c.volume, pan,
+            c.voiceMode == (uint8_t)VoiceMode::Spu2 ? "SPU2" : "SW", c.inst.kind == (uint8_t)InstrKind::Synth ? "SYN " : "",
+            c.route == 0 ? "MST" : p.tracks[c.route].name, c.mute ? " MUTED" : "", c.solo ? " SOLO" : "");
 }

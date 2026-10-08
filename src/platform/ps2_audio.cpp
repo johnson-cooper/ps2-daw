@@ -342,9 +342,40 @@ void Ps2Audio::dispatchHw(uint32_t heard)
     pendingCount_ = keep;
 }
 
+bool Ps2Audio::hold(uint32_t timeoutMs)
+{
+    if (!stats_.streaming)
+        return true; // nothing is rendering
+    holdAck_ = 0;
+    holdRequest_ = 1;
+    for (uint32_t waited = 0; waited < timeoutMs; ++waited) {
+        if (holdAck_)
+            return true;
+        ps2sys::sleepUs(1000);
+    }
+    holdRequest_ = 0;
+    return false;
+}
+
+void Ps2Audio::release()
+{
+    holdRequest_ = 0;
+}
+
 void Ps2Audio::run()
 {
     for (;;) {
+        // Parked for an offline render: the engine belongs to another thread
+        // until released. The stream simply drains to silence meanwhile.
+        if (holdRequest_) {
+            pendingCount_ = 0;
+            primed_ = false;
+            holdAck_ = 1;
+            ps2sys::sleepUs(2000);
+            continue;
+        }
+        holdAck_ = 0;
+
         // Finish handing over a partly accepted block before anything else.
         if (tailFrames_ > 0) {
             const bool ok = submitTail();

@@ -317,8 +317,14 @@ static void testSlotStore()
     // Empty slots and slot numbers outside 1..8.
     CHECK(!slotstore::peek(fs, dir, 5, a, sizeof(a)).exists);
     CHECK(!slotstore::load(fs, dir, 5, out, a, sizeof(a), &bak, err, sizeof(err)));
-    CHECK(!slotstore::save(fs, dir, 0, p1, a, b, sizeof(a), err, sizeof(err)));
+    CHECK(!slotstore::save(fs, dir, -1, p1, a, b, sizeof(a), err, sizeof(err)));
     CHECK(!slotstore::save(fs, dir, 9, p1, a, b, sizeof(a), err, sizeof(err)));
+    // Slot 0 is the autosave: same safe rotation, its own file name, independent of the numbered slots.
+    CHECK(slotstore::save(fs, dir, slotstore::kAutosaveSlot, p1, a, b, sizeof(a), err, sizeof(err)));
+    CHECK(fs.exists("mass0:/PS2DAW/AUTOSAVE.ps2daw"));
+    CHECK(slotstore::peek(fs, dir, slotstore::kAutosaveSlot, a, sizeof(a)).exists);
+    CHECK(slotstore::load(fs, dir, slotstore::kAutosaveSlot, out, a, sizeof(a), &bak, err, sizeof(err)) && !bak);
+    CHECK(slotstore::save(fs, dir, slotstore::kAutosaveSlot, p1, a, b, sizeof(a), err, sizeof(err)) && fs.exists("mass0:/PS2DAW/AUTOSAVE.BAK"));
 
     // External sample references round-trip through a slot and are counted.
     CHECK(slotstore::save(fs, dir, 2, p2, a, b, sizeof(a), err, sizeof(err)));
@@ -758,7 +764,7 @@ static void testNoteEditing()
     H h;
     Session& s = h.session;
     const Project& p = s.project();
-    CHECK(!s.addNote(-1, 0, 0, 60, 1, 100) && !s.addNote(0, 8, 0, 60, 1, 100) && !s.addNote(0, 0, 64, 60, 1, 100) &&
+    CHECK(!s.addNote(-1, 0, 0, 60, 1, 100) && !s.addNote(0, cfg::kMaxChannels, 0, 60, 1, 100) && !s.addNote(0, 0, 64, 60, 1, 100) &&
           !s.addNote(0, 0, 0, 128, 1, 100) && !s.addNote(0, 0, 0, -1, 1, 100));
     CHECK(p.patterns[0].noteCount[0] == 0);
 

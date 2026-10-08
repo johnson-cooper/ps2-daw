@@ -14,6 +14,10 @@ class Sequencer {
 public:
     struct Note {
         uint8_t step, pitch, velocity, length;
+        uint8_t tick;
+        uint8_t reserved;
+        uint16_t lenTicks; // 0 = `length` whole steps
+        int durTicks() const { return lenTicks ? lenTicks : length * cfg::kTicksPerStep; }
     };
 
     Sequencer()

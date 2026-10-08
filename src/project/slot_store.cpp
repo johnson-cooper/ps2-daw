@@ -17,9 +17,9 @@ static bool fail(char* err, size_t cap, const char* msg)
 
 bool slotPath(char* out, size_t cap, const char* dir, int slot, const char* ext)
 {
-    if (slot < 1 || slot > kSlots)
+    if (slot < kAutosaveSlot || slot > kSlots)
         return false;
-    const int n = snprintf(out, cap, "%s/SLOT%d.%s", dir, slot, ext);
+    const int n = slot == kAutosaveSlot ? snprintf(out, cap, "%s/AUTOSAVE.%s", dir, ext) : snprintf(out, cap, "%s/SLOT%d.%s", dir, slot, ext);
     return n > 0 && (size_t)n < cap;
 }
 

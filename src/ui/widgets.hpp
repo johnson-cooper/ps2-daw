@@ -29,7 +29,8 @@ void selectOutline(Gfx& g, int x, int y, int w, int h, uint32_t color);
 // Modal list dialog: title + up to kMaxItems rows.
 class ContextMenu {
 public:
-    static constexpr int kMaxItems = 14;
+    static constexpr int kMaxItems = 24;
+    static constexpr int kRows = 13; // rows shown at once; longer lists scroll
     static constexpr int kNone = -1;
 
     void open(const char* title);
@@ -51,8 +52,17 @@ private:
     Item items_[kMaxItems];
     int count_ = 0;
     int sel_ = 0;
+    mutable int top_ = 0;
     bool open_ = false;
 };
+
+// One editable parameter: name on the left, value text and a bar on the right.
+// `frac` is the value position in 0..1000.
+void paramRow(Gfx& g, int x, int y, int w, const char* name, const char* value, int frac, bool selected, bool editing);
+// AHDSR envelope outline. `env` holds cfg::kEnvParams values (see EnvParam).
+void envelopeGraph(Gfx& g, int x, int y, int w, int h, const int16_t* env, bool enabled);
+// Horizontal stereo level bar (post-fader peaks) with a clip marker.
+void hmeter(Gfx& g, int x, int y, int w, int h, uint16_t level, bool clipped);
 
 // Converts a meter level (0..32767) to an approximate dBFS for display.
 int levelToDb(uint16_t level);
