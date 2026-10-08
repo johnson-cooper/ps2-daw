@@ -38,7 +38,7 @@ columns, because they mean different things:
 | Optional SPU2 upload of mono imports | yes | **no** | not yet |
 | Queued pattern switching (beat / bar), copy, duplicate, names | yes | yes (switch observed) | not yet |
 | Safe project saves (`.TMP` + `.BAK`), load recovery, slot info | yes | **no** (needs USB) | not yet |
-| Playlist: 8 tracks x 128 bars, clips, song mode with looping playhead | yes | yes (clips placed, song played and looped) | not yet |
+| Playlist: 16 tracks x 128 bars, clips, song mode with looping playhead | yes | yes (clips placed, song played and looped) | not yet |
 | Piano roll: pitched samples, chords, note length, sustained instruments (software voices) | yes | yes (notes placed from the rack menu and played) | not yet |
 | Pitched SPU2 voices (channel pitch) | yes | **no** | not yet |
 | Playlist: play from bar, track mute/solo, duplicate and move clips | yes | host tests only | not yet |

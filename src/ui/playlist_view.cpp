@@ -36,8 +36,8 @@ const char* PlaylistView::hint() const
     if (editingAudio_)
         return G_UP G_DOWN " ROW  " G_LEFT G_RIGHT " ADJUST  L1/R1 x10  " G_SQUARE " HEAR  " G_CIRCLE " DONE";
     if (audioBrush_)
-        return G_CROSS " PLACE/REMOVE " G_SQUARE " PICK " G_CIRCLE " SONG MODE " G_TRIANGLE " MENU  L1/R1 LEN  L2/R2 SAMPLE";
-    return G_CROSS " PLACE/REMOVE " G_SQUARE " PICK " G_CIRCLE " SONG MODE " G_TRIANGLE " MENU  L1/R1 LEN  L2/R2 PATTERN";
+        return G_CROSS " PLACE/REMOVE " G_SQUARE " MOVE " G_CIRCLE " SONG MODE " G_TRIANGLE " MENU  L1/R1 LEN  L2/R2 SAMPLE";
+    return G_CROSS " PLACE/REMOVE " G_SQUARE " MOVE " G_CIRCLE " SONG MODE " G_TRIANGLE " MENU  L1/R1 LEN  L2/R2 PATTERN";
 }
 
 void PlaylistView::onEnter(UiContext& ctx)
@@ -53,6 +53,10 @@ void PlaylistView::scrollToCursor()
         scroll_ = bar_ - kVisibleBars + 1;
     if (scroll_ < 0)
         scroll_ = 0;
+    if (track_ < trackScroll_)
+        trackScroll_ = track_;
+    if (track_ >= trackScroll_ + kVisibleTracks)
+        trackScroll_ = track_ - kVisibleTracks + 1;
 }
 
 int PlaylistView::firstAudioSlot(const UiContext& ctx, int from, int dir) const
@@ -98,6 +102,7 @@ void PlaylistView::openMenu(UiContext& ctx)
     ctx.menu.add(MenuSolo, buf);
     snprintf(buf, sizeof(buf), "Track %d name: %.8s (next)", track_ + 1, p.playlistTrackName[track_]);
     ctx.menu.add(MenuTrackName, buf);
+    ctx.menu.add(MenuPick, "Use this clip as the brush", onPattern || onAudio);
     ctx.menu.add(MenuDuplicate, "Duplicate clip right after itself", onPattern || onAudio);
     ctx.menu.add(MenuMove, "Move clip (D-pad, Cross drops)", onPattern || onAudio);
     ctx.menu.add(MenuClearTrack, "Clear this track");
@@ -125,6 +130,21 @@ void PlaylistView::handleMenu(int id, UiContext& ctx)
         return;
     }
     switch (id) {
+    case MenuPick: {
+        const int ai = p.audioClipAt(track_, bar_), ci = p.clipAt(track_, bar_);
+        if (ai >= 0) {
+            audioSlot_ = s.audioClipSlot(ai);
+            audioBrush_ = true;
+            brushBars_ = p.audioClips[ai].lengthBars;
+            ctx.toast("Brush: sample %s", ctx.bank.get(audioSlot_) ? ctx.bank.get(audioSlot_)->name : "?");
+        } else if (ci >= 0) {
+            s.selectPattern(p.clips[ci].pattern);
+            audioBrush_ = false;
+            brushBars_ = p.clips[ci].lengthBars;
+            ctx.toast("Brush: pattern %d", p.clips[ci].pattern + 1);
+        }
+        break;
+    }
     case MenuUngroup: {
         const int ci = p.clipAt(track_, bar_);
         if (ci < 0)
@@ -451,10 +471,15 @@ void PlaylistView::update(const InputState& in, UiContext& ctx)
     const Project& p = s.project();
     if (moving_) {
         // Carrying a clip: only movement, drop and cancel are active.
-        if (in.rep(btn::Left) && bar_ > 0)
-            --bar_;
-        if (in.rep(btn::Right) && bar_ < cfg::kMaxSongBars - 1)
-            ++bar_;
+        const int jump = in.down(btn::R2) ? 4 : 1; // hold R2 to carry four bars at a time
+        if (in.rep(btn::Left))
+            bar_ = bar_ - jump < 0 ? 0 : bar_ - jump;
+        if (in.rep(btn::Right))
+            bar_ = bar_ + jump > cfg::kMaxSongBars - 1 ? cfg::kMaxSongBars - 1 : bar_ + jump;
+        if (!movingAudio_ && (in.rep(btn::L1) || in.rep(btn::R1))) {
+            const int nl = held_.lengthBars + (in.rep(btn::R1) ? 1 : -1);
+            held_.lengthBars = (uint16_t)(nl < 1 ? 1 : (nl > 32 ? 32 : nl));
+        }
         if (in.rep(btn::Up) && track_ > 0)
             --track_;
         if (in.rep(btn::Down) && track_ < cfg::kPlaylistTracks - 1)
@@ -541,19 +566,9 @@ void PlaylistView::update(const InputState& in, UiContext& ctx)
             ctx.toast("Playlist is full (%d clips)", cfg::kMaxClips);
         }
     }
-    if (in.hit(btn::Square)) {
-        if (aidx >= 0) {
-            audioSlot_ = s.audioClipSlot(aidx);
-            audioBrush_ = true;
-            brushBars_ = p.audioClips[aidx].lengthBars;
-            ctx.toast("Picked sample %s", ctx.bank.get(audioSlot_) ? ctx.bank.get(audioSlot_)->name : "?");
-        } else if (idx >= 0) {
-            s.selectPattern(p.clips[idx].pattern);
-            audioBrush_ = false;
-            brushBars_ = p.clips[idx].lengthBars;
-            ctx.toast("Picked pattern %d", p.clips[idx].pattern + 1);
-        }
-    }
+    // Square picks a clip up: carry it with the D-pad, Cross drops it (the menu has "use as brush").
+    if (in.hit(btn::Square) && (aidx >= 0 || idx >= 0))
+        handleMenu(MenuMove, ctx);
     if (in.hit(btn::Circle)) {
         s.setSongMode(!s.songMode());
         ctx.toast(s.songMode() ? (p.songBars() ? "SONG mode: START plays the playlist" : "SONG mode, but the playlist is empty")
@@ -576,7 +591,10 @@ void PlaylistView::drawAudioClip(Gfx& g, UiContext& ctx, int i)
         return;
     const int v0 = s0 < scroll_ ? scroll_ : s0, v1 = s1 > scroll_ + kVisibleBars ? scroll_ + kVisibleBars : s1;
     const int cx = kGridX + (v0 - scroll_) * kCellW, cw = (v1 - v0) * kCellW;
-    const int ry = kGridY + k.track * kRowH;
+    const int arow = rowOf(k.track);
+    if (arow < 0)
+        return;
+    const int ry = kGridY + arow * kRowH;
     g.fillRect(cx + 1, ry + 1, cw - 2, kRowH - 2, kAudioColor);
 
     // Waveform of the trimmed region, drawn at the clip's real time scale.
@@ -645,8 +663,9 @@ void PlaylistView::draw(Gfx& g, UiContext& ctx)
             g.textf(cx + 2, kGridY - 18, theme::kTextDim, "%d", bar + 1);
     }
     // Rows and cells.
-    for (int t = 0; t < cfg::kPlaylistTracks; ++t) {
-        const int ry = kGridY + t * kRowH;
+    for (int tr = 0; tr < kVisibleTracks; ++tr) {
+        const int t = trackScroll_ + tr;
+        const int ry = kGridY + tr * kRowH;
         const bool muted = (p.trackMute >> t) & 1, soloed = (p.trackSolo >> t) & 1;
         g.textf(x + 6, ry + 1, muted ? theme::kMute : (t == track_ ? theme::kText : theme::kTextDim), "T%d", t + 1);
         if (strncmp(p.playlistTrackName[t], "TRACK", 5) != 0)
@@ -672,7 +691,10 @@ void PlaylistView::draw(Gfx& g, UiContext& ctx)
             continue;
         const int v0 = s0 < scroll_ ? scroll_ : s0, v1 = s1 > scroll_ + kVisibleBars ? scroll_ + kVisibleBars : s1;
         const int cx = kGridX + (v0 - scroll_) * kCellW, cw = (v1 - v0) * kCellW;
-        const int ry = kGridY + k.track * kRowH;
+        const int prow = rowOf(k.track);
+        if (prow < 0)
+            continue;
+        const int ry = kGridY + prow * kRowH;
         const uint32_t col = kPatternColors[k.pattern % cfg::kMaxPatterns];
         g.fillRect(cx + 1, ry + 1, cw - 2, kRowH - 2, col);
         if (s0 >= scroll_) { // label only where the clip really starts
@@ -713,25 +735,26 @@ void PlaylistView::draw(Gfx& g, UiContext& ctx)
     // End of the song.
     const int end = p.songBars();
     if (end > scroll_ && end <= scroll_ + kVisibleBars)
-        g.fillRect(kGridX + (end - scroll_) * kCellW - 1, kGridY - 4, 2, cfg::kPlaylistTracks * kRowH + 4, theme::kMute);
+        g.fillRect(kGridX + (end - scroll_) * kCellW - 1, kGridY - 4, 2, kVisibleTracks * kRowH + 4, theme::kMute);
     // Playhead (song mode only: in pattern mode the rack shows the playhead).
     const int songStep = ctx.heardSongStep();
     if (song && songStep >= 0) {
         const int px = kGridX + songStep * kCellW / kBarsPerStep - scroll_ * kCellW;
         if (px >= kGridX && px < kGridX + kVisibleBars * kCellW)
-            g.fillRect(px, kGridY - 4, 2, cfg::kPlaylistTracks * kRowH + 4, theme::kPlayhead);
+            g.fillRect(px, kGridY - 4, 2, kVisibleTracks * kRowH + 4, theme::kPlayhead);
     }
     // A carried clip: outline where it would land.
     if (moving_) {
         const int gw = (movingAudio_ ? p.audioClips[movingIndex_].lengthBars : held_.lengthBars) * kCellW;
         const int vis = (bar_ - scroll_) * kCellW;
-        g.frameRect(kGridX + vis, kGridY + track_ * kRowH, gw > kVisibleBars * kCellW - vis ? kVisibleBars * kCellW - vis : gw,
+        g.frameRect(kGridX + vis, kGridY + (track_ - trackScroll_) * kRowH, gw > kVisibleBars * kCellW - vis ? kVisibleBars * kCellW - vis : gw,
                     kRowH, movingAudio_ ? kAudioWave : kPatternColors[held_.pattern % cfg::kMaxPatterns], 2);
     }
     // Cursor.
-    ui::selectOutline(g, kGridX + (bar_ - scroll_) * kCellW, kGridY + track_ * kRowH, kCellW, kRowH, theme::kSelect);
+    ui::selectOutline(g, kGridX + (bar_ - scroll_) * kCellW, kGridY + (track_ - trackScroll_) * kRowH, kCellW, kRowH, theme::kSelect);
+    ui::scrollbar(g, kGridX + kVisibleBars * kCellW + 6, kGridY, 6, kVisibleTracks * kRowH, trackScroll_, kVisibleTracks, cfg::kPlaylistTracks);
     // Details (small font, two lines).
-    const int iy = kGridY + cfg::kPlaylistTracks * kRowH + 8;
+    const int iy = kGridY + kVisibleTracks * kRowH + 8;
     const int idx = p.clipAt(track_, bar_);
     const int aidx = p.audioClipAt(track_, bar_);
     char line[110];

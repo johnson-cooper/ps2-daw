@@ -36,7 +36,7 @@ enum class CmdType : uint8_t {
     SetNoteCount,        // a = pattern, b = channel, value = number of valid notes
     SetNoteFine,         // a = pattern, b = channel, c = index, value = tick | lenTicks << 8 (sub-step timing)
     SetChannelGate,      // a = channel, value = 0 one-shot, 1 note length cuts the sample
-    SetTrackMask,        // value = playlist track mute bits | solo bits << 8
+    SetTrackMask,        // value = playlist track mute bits | solo bits << 16
     PlayFromBar,         // value = bar: start (or restart) the song from that bar
     ReleaseSample,       // value = sample slot: stop its voices, then acknowledge
     AllVoicesOff,

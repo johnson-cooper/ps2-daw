@@ -138,7 +138,7 @@ private:
     int8_t channelSample_[cfg::kMaxChannels];
     uint8_t channelGate_[cfg::kMaxChannels];
     bool chokeDone_[cfg::kMaxChannels]; // a voice on this channel was already (re)triggered this step
-    uint8_t trackMute_, trackSolo_;
+    uint16_t trackMute_, trackSolo_;
     VoiceMode channelMode_[cfg::kMaxChannels];
     uint8_t sampleHwReady_[cfg::kMaxSamples];
 

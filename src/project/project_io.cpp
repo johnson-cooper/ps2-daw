@@ -311,8 +311,10 @@ size_t save(const Project& p, uint8_t* buf, size_t cap)
         w.u16(p.clips[i].lengthBars);
     }
     w.u8(p.songMode ? 1 : 0); // trailing optional fields: older files simply end after the clips
-    w.u8(p.trackMute);
-    w.u8(p.trackSolo);
+    w.u8((uint8_t)p.trackMute); // low bytes first: tracks 1-8 for older readers
+    w.u8((uint8_t)p.trackSolo);
+    w.u16(p.trackMute);         // full 16-track masks
+    w.u16(p.trackSolo);
     w.end(c);
 
     // Trailer: CRC32 of everything before the END chunk.
@@ -491,8 +493,12 @@ bool load(const uint8_t* data, size_t size, Project& out, char* err, size_t errC
             p.clipCount = n;
             p.songMode = b.remaining() >= 1 ? (b.u8() ? 1 : 0) : 0;
             if (b.remaining() >= 2) {
-                p.trackMute = b.u8() & ((1u << cfg::kPlaylistTracks) - 1);
-                p.trackSolo = b.u8() & ((1u << cfg::kPlaylistTracks) - 1);
+                p.trackMute = b.u8();
+                p.trackSolo = b.u8();
+                if (b.remaining() >= 4) { // 16-track masks (newer files)
+                    p.trackMute = b.u16();
+                    p.trackSolo = b.u16();
+                }
             }
             p.sanitizeClips();
         } else if (memcmp(tag, "INST", 4) == 0) {

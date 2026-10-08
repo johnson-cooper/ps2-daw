@@ -30,7 +30,7 @@ bytes (printable ASCII; anything else is replaced with `?` on load).
 | `PMSK` | u16 count, then per ungrouped pattern clip: u8 track, u16 start bar, u16 channel bit mask (bit n = rack channel n plays). Written before `PLST` only when a clip does not play all instruments; clips are matched by track and start bar. Older readers skip it and play the whole pattern on every clip |
 | `TNAM` | u8 count, then that many str: playlist track names |
 | `ACLP` | u8 source count (8), then that many str: sample references used by audio clips (same syntax as channel sample references); u16 clip count (max 16), then per clip: u8 track, u8 source index, u16 start bar, u16 length bars, u8 volume (0-100), u8 loop, u8 mixer insert (0 = master), u32 trim start (frames), u32 trim end (frames, 0 = to the end of the sample) |
-| `PLST` | u16 clip count, then per clip: u8 track, u8 pattern, u16 start bar, u16 length bars; then optional trailing bytes: u8 song mode (1 = play the playlist), u8 track mute bits, u8 track solo bits (older files end earlier and read as 0) |
+| `PLST` | u16 clip count, then per clip: u8 track, u8 pattern, u16 start bar, u16 length bars; then optional trailing bytes: u8 song mode (1 = play the playlist), u8 track mute bits, u8 track solo bits (tracks 1-8), then optionally u16 mute bits and u16 solo bits for all 16 tracks (older files end earlier and read as 0; files with only the 8-bit masks load tracks 9-16 unmuted) |
 | `END ` | u32 CRC-32 (IEEE) of every byte before this chunk |
 
 Sample references (at most 63 characters):
@@ -55,7 +55,7 @@ values are clamped to legal ranges, a missing `PROJ` or `END ` chunk or a CRC
 mismatch rejects the file with a readable reason and leaves the current song
 untouched.
 
-Playlist validation on load: clips with a track >= 6, pattern >= 8, length 0 or
+Playlist validation on load: clips with a track >= 16, pattern >= 8, length 0 or
 start bar >= 128 are dropped, lengths are clamped so a clip ends by bar 128,
 a clip overlapping an earlier clip on the same track is dropped, and the
 survivors are sorted by (start bar, track). At most 64 clips.

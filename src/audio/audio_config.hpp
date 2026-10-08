@@ -33,7 +33,7 @@ constexpr int kMaxSamples = 32;
 // Piano roll: extra polyphonic notes per pattern and channel, on top of the step grid.
 constexpr int kMaxNotes = 64;
 
-constexpr int kPlaylistTracks = 8;
+constexpr int kPlaylistTracks = 16;
 constexpr int kMaxSongBars = 128;
 constexpr int kMaxClips = 64;
 

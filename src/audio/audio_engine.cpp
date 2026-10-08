@@ -189,8 +189,8 @@ void AudioEngine::apply(const Command& c)
             channelGate_[c.a] = c.value ? 1 : 0;
         break;
     case CmdType::SetTrackMask:
-        trackMute_ = (uint8_t)(c.value & 0xff);
-        trackSolo_ = (uint8_t)((c.value >> 8) & 0xff);
+        trackMute_ = (uint16_t)((uint32_t)c.value & 0xffff);
+        trackSolo_ = (uint16_t)(((uint32_t)c.value >> 16) & 0xffff);
         break;
     case CmdType::PlayFromBar:
         if (songActive()) {

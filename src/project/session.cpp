@@ -120,7 +120,7 @@ void Session::syncNotes(int pattern, int channel)
 
 void Session::syncTrackMask()
 {
-    post(CmdType::SetTrackMask, 0, 0, 0, (int32_t)(project_.trackMute | ((uint32_t)project_.trackSolo << 8)));
+    post(CmdType::SetTrackMask, 0, 0, 0, (int32_t)((uint32_t)project_.trackMute | ((uint32_t)project_.trackSolo << 16)));
 }
 
 int Session::noteIndexAt(int pattern, int channel, int step, int pitch) const
@@ -254,7 +254,7 @@ void Session::setTrackMute(int track, bool mute)
 {
     if (!inRange(track, cfg::kPlaylistTracks))
         return;
-    project_.trackMute = (uint8_t)(mute ? (project_.trackMute | (1u << track)) : (project_.trackMute & ~(1u << track)));
+    project_.trackMute = (uint16_t)(mute ? (project_.trackMute | (1u << track)) : (project_.trackMute & ~(1u << track)));
     syncTrackMask();
 }
 
@@ -262,7 +262,7 @@ void Session::setTrackSolo(int track, bool solo)
 {
     if (!inRange(track, cfg::kPlaylistTracks))
         return;
-    project_.trackSolo = (uint8_t)(solo ? (project_.trackSolo | (1u << track)) : (project_.trackSolo & ~(1u << track)));
+    project_.trackSolo = (uint16_t)(solo ? (project_.trackSolo | (1u << track)) : (project_.trackSolo & ~(1u << track)));
     syncTrackMask();
 }
 

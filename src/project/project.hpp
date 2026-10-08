@@ -110,8 +110,8 @@ struct Project {
     uint16_t clipCount;
     PlaylistClip clips[kMaxClips];
     uint8_t songMode;         // 1 = play the playlist, 0 = loop the current pattern
-    uint8_t trackMute;        // playlist track bits
-    uint8_t trackSolo;
+    uint16_t trackMute;       // playlist track bits
+    uint16_t trackSolo;
     uint8_t swing;            // 0..50: percent of a 16th step by which odd steps are delayed
 
     MixerTrackData tracks[cfg::kMixBuses];             // [0] = master chain, [1..8] = inserts

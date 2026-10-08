@@ -520,7 +520,7 @@ static void testPlaylistProject()
 
     // Hostile or broken clips are rejected or repaired, never trusted.
     a.clipCount = 0;
-    add(9, 0, 0, 1);       // track out of range
+    add(cfg::kPlaylistTracks + 3, 0, 0, 1);       // track out of range
     add(0, 9, 0, 1);       // pattern out of range (the loader clamps patterns; sanitize drops bad ones)
     add(0, 0, 0, 0);       // empty clip
     add(0, 0, 500, 1);     // beyond the song limit
@@ -531,7 +531,7 @@ static void testPlaylistProject()
     CHECK(n && projectio::load(buf, n, b, err, sizeof(err)));
     CHECK(b.clipAt(1, 120) >= 0 && b.clips[b.clipAt(1, 120)].lengthBars == cfg::kMaxSongBars - 120);
     CHECK(b.clipAt(2, 0) >= 0 && b.clips[b.clipAt(2, 0)].pattern == 2 && b.clipAt(2, 5) < 0);
-    CHECK(b.clipAt(9, 0) < 0 && b.clipAt(0, 500) < 0);
+    CHECK(b.clipAt(cfg::kPlaylistTracks + 3, 0) < 0 && b.clipAt(0, 500) < 0);
     CHECK(b.songBars() <= cfg::kMaxSongBars);
     for (int i = 0; i < b.clipCount; ++i)
         CHECK(b.clips[i].track < cfg::kPlaylistTracks && b.clips[i].pattern < cfg::kMaxPatterns && b.clips[i].lengthBars > 0);
@@ -577,9 +577,9 @@ static void testPlaylistProject()
     n = projectio::save(a, buf, sizeof(buf));
     CHECK(projectio::load(buf, n, b, err, sizeof(err)) && b.trackMute == 0x05 && b.trackSolo == 0x02 && b.songMode == 1);
     // Layout 1: before song mode existed (no trailing bytes at all).
-    CHECK(older(3, b) && b.clipCount == 1 && b.songMode == 0 && b.trackMute == 0 && b.trackSolo == 0);
+    CHECK(older(7, b) && b.clipCount == 1 && b.songMode == 0 && b.trackMute == 0 && b.trackSolo == 0);
     // Layout 2: song mode but no track masks.
-    CHECK(older(2, b) && b.clipCount == 1 && b.songMode == 1 && b.trackMute == 0 && b.trackSolo == 0);
+    CHECK(older(6, b) && b.clipCount == 1 && b.songMode == 1 && b.trackMute == 0 && b.trackSolo == 0);
 
     // The playlist reaches the engine on project load.
     H h;

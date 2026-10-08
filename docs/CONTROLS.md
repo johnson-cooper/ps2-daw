@@ -129,7 +129,7 @@ insert the channel plays into.
 
 ## Song (Playlist)
 
-Rows are tracks (8), columns are bars (up to 128, 16 shown, the view scrolls).
+Rows are tracks (16, eight shown at a time: the grid scrolls vertically with the cursor), columns are bars (up to 128, 16 shown, the view scrolls).
 A clip puts a pattern on a track for a number of bars; the pattern loops while
 the clip lasts. Clips on different tracks play together; clips on one track
 never overlap (placing over one replaces it).
@@ -138,7 +138,7 @@ never overlap (placing over one replaces it).
 | --- | --- |
 | D-pad | move the cursor (track / bar) |
 | Cross | empty cell: place the current pattern (brush length); on a clip: remove it |
-| Square | on a clip: pick up its pattern and length as the brush |
+| Square | on a clip: **pick it up** and carry it (D-pad moves it, R2 held moves four bars at a time, L1 / R1 resize it, Cross drops it, Circle puts it back); the menu's *Use this clip as the brush* does what Square used to |
 | L2 / R2 | previous / next pattern (the brush; same selection as the rack) |
 | L1 / R1 | on a clip: shorten / lengthen it (stops at the next clip on the track); on an empty cell: brush length |
 | Circle | toggle SONG mode (plays the playlist) / PATTERN mode (loops the current pattern) |

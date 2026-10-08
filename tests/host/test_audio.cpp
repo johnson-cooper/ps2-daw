@@ -1559,6 +1559,44 @@ static void testUngroupClips()
     }
 }
 
+static void testManyTracks()
+{
+    R r;
+    CHECK(cfg::kPlaylistTracks == 16);
+    r.session.setSample(0, r.dc("DC", 5000));
+    r.session.setVolume(0, 100);
+    r.session.toggleStep(0, 0);
+    // a clip on the last track plays; muting that track (a bit above the old 8-track masks) silences it
+    CHECK(r.session.placeClip(15, 0, 0, 1));
+    r.session.setSongMode(true);
+    r.session.play();
+    r.render(3000);
+    CHECK(r.peak(0, 3000) > 10000);
+    r.session.stop();
+    r.session.setTrackMute(15, true);
+    r.session.setTrackMute(12, true);
+    r.session.play();
+    r.L.clear();
+    r.render(3000);
+    CHECK(r.peak(600, 3000) == 0);
+    // solo on a high track keeps only that track
+    r.session.stop();
+    r.session.setTrackMute(15, false);
+    r.session.setTrackSolo(15, true);
+    r.session.play();
+    r.L.clear();
+    r.render(3000);
+    CHECK(r.peak(0, 3000) > 10000);
+    // masks for all sixteen tracks survive save and load
+    r.session.setTrackSolo(15, false);
+    static uint8_t buf[projectio::kMaxFileBytes];
+    const size_t n = projectio::save(r.session.project(), buf, sizeof(buf));
+    Project p;
+    char err[64];
+    CHECK(n > 0 && projectio::load(buf, n, p, err, sizeof(err)));
+    CHECK(p.trackMute == (1u << 12) && p.clipAt(15, 0) >= 0);
+}
+
 int runAudioTests()
 {
     printf("running mixer/fx/instrument tests\n");
@@ -1573,6 +1611,7 @@ int runAudioTests()
     testSwingAndMetronome();
     testAddRemoveChannels();
     testUngroupClips();
+    testManyTracks();
     testProjectPersistence();
     return g_fail;
 }

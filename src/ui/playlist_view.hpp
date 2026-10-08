@@ -31,6 +31,7 @@ private:
         MenuChooseSample,
         MenuEditAudio,
         MenuTrackName,
+        MenuPick,
         MenuUngroup,
         MenuTakeOut,
         MenuRegroup,
@@ -48,6 +49,9 @@ private:
     int audioBrushBars(const UiContext& ctx) const;
 
     int track_ = 0;
+    int trackScroll_ = 0;  // first visible track (eight rows at a time)
+    static constexpr int kVisibleTracks = 8;
+    int rowOf(int track) const { const int r = track - trackScroll_; return (r < 0 || r >= kVisibleTracks) ? -1 : r; }
     int bar_ = 0;
     int scroll_ = 0;     // first visible bar
     int brushBars_ = 1;  // length used for newly placed pattern clips
